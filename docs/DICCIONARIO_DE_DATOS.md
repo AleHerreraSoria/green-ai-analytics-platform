@@ -16,9 +16,9 @@ Este documento describe el **stack de información** del proyecto: contexto hist
 ---
 ## 1. Our World in Data (Energy)
 
-Datos históricos por país o región agregada. En el repositorio: `OWID/owid-energy-data.csv` y el codebook asociado.
+Copia local del dataset de energía de [Our World in Data](https://github.com/owid/energy-data): `data/Our_World_In_Data/owid-energy-data.csv`.
 
-### 1.1 Dataset principal (`OWID/owid-energy-data.csv`)
+### 1.1 `data/Our_World_In_Data/owid-energy-data.csv`
 
 | Metadato | Valor |
 |----------|-------|
@@ -29,47 +29,142 @@ Datos históricos por país o región agregada. En el repositorio: `OWID/owid-en
 
 ### Descripción
 
-Serie temporal de energía por país o región agregada (Our World in Data). Cada fila es un par (entidad geográfica, año). Los valores numéricos pueden estar vacíos donde no hay dato.
+Panel anual: cada fila es una observación para una **entidad geográfica** (país o agregado regional publicado por OWID) en un **año** concreto. Los campos numéricos pueden ir vacíos cuando no hay dato en la fuente subyacente. Las 130 columnas del fichero se detallan en la tabla siguiente (nombre de campo, tipo inferido para uso en pipelines y descripción del indicador).
 
-La definición de cada variable del dataset principal (título, descripción, unidad y fuente) se documenta en el archivo auxiliar `OWID/owid-energy-codebook.csv`, descrito en la sección 1.2.
-
-### 1.2 Codebook de variables (`OWID/owid-energy-codebook.csv`)
-
-| Metadato | Valor |
-|----------|-------|
-| Registros (una fila por columna del dataset principal) | 130 |
-| Columnas | 5 (`column`, `title`, `description`, `unit`, `source`) |
-| Formato | CSV, separador coma, cabecera en línea 1 |
-| Codificación | UTF-8 |
-| Relación | Una fila por variable de `owid-energy-data.csv`; no contiene series temporales, solo metadatos. |
-
-### Descripción
-
-Dataset auxiliar publicado junto al CSV principal por Our World in Data: catálogo de las 130 variables del archivo de energía. Cada fila enlaza el **nombre de columna** en el CSV con su **título**, **definición**, **unidad** (si aplica) y **fuente** de la serie. Sirve como diccionario de referencia al diseñar esquemas Silver/Gold o al interpretar columnas en análisis. El detalle literal de cada variable permanece en `OWID/owid-energy-codebook.csv` del repositorio (y en el dataset OWID en GitHub).
-
-### Estructura del archivo (columnas del codebook)
+### Columnas
 
 | Campo | Tipo | Descripción |
 |-------|------|-------------|
-| `column` | texto | Nombre de la columna tal como aparece en `owid-energy-data.csv`. |
-| `title` | texto | Etiqueta o título descriptivo de la variable. |
-| `description` | texto | Definición y alcance de la medida. |
-| `unit` | texto | Unidad de la magnitud (vacío si no aplica o es adimensional). |
-| `source` | texto | Fuente o referencia de la serie (puede incluir enlaces). |
-
-### Variables del dataset principal cubiertas por el codebook (resumen temático)
-
-Las 130 entradas describen, entre otras, las siguientes familias de indicadores (los prefijos de nombre en el CSV siguen la misma lógica: combustible o tema + tipo de métrica):
-
-| Ámbito | Contenido típico (ejemplos de prefijos / nombres) |
-|--------|---------------------------------------------------|
-| Identificación | `country`, `year`, `iso_code` |
-| Economía y población | `population`, `gdp` |
-| Energía agregada | `primary_energy_consumption`, `energy_per_capita`, `energy_per_gdp`, cambios anuales (`energy_cons_change_*`) |
-| Electricidad (totales e importaciones) | `electricity_generation`, `electricity_demand`, `per_capita_electricity`, `net_elec_imports`, `carbon_intensity_elec`, `greenhouse_gas_emissions` |
-| Por combustible / tecnología | Series por **carbón**, **petróleo**, **gas**, **nuclear**, **hidro**, **solar**, **eólica**, **biocombustibles**, **renovables**, **baja emisión** (`low_carbon_*`), **otras renovables**: consumo primario, generación eléctrica, shares, valores per cápita, producción (fósiles), y cambios interanuales (`*_cons_change_*`, `*_share_elec`, `*_share_energy`, etc.) |
-
-Para el significado exacto, unidad y fuente de cada columna, consultar el CSV del codebook o unir `owid-energy-data.csv` con `owid-energy-codebook.csv` por `column`.
+| `country` | texto | País. Ubicación geográfica. |
+| `year` | entero | Año. Año de observación. |
+| `iso_code` | texto | Código ISO. Códigos de países de tres letras ISO 3166-1 alfa-3. |
+| `population` | numérico | Población. Población por país, disponible desde 10.000 a. C. hasta 2100, basada en datos y estimaciones de diferentes fuentes. Unidad: personas. |
+| `gdp` | numérico | Producto interno bruto (PIB). Producción económica total de un país o región por año. Estos datos están ajustados por inflación y diferencias en el costo de vida entre países. Unidad: internacional-$ en precios de 2011 ($). |
+| `biofuel_cons_change_pct` | numérico | Variación porcentual anual del consumo de biocombustibles. Incluye biogasolina (como etanol) y biodiesel. Los volúmenes se han ajustado según el contenido energético. Unidad: %. |
+| `biofuel_cons_change_twh` | numérico | Variación anual del consumo de biocombustibles. Incluye biogasolina (como etanol) y biodiesel. Los volúmenes se han ajustado según el contenido energético. Unidad: teravatios-hora (TWh). |
+| `biofuel_cons_per_capita` | numérico | Consumo de biocombustibles per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `biofuel_consumption` | numérico | Consumo de energía primaria procedente de biocombustibles. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `biofuel_elec_per_capita` | numérico | Generación de electricidad a partir de bioenergía por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `biofuel_electricity` | numérico | Generación de electricidad a partir de bioenergía. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `biofuel_share_elec` | numérico | Proporción de electricidad generada por bioenergía. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `biofuel_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de biocombustibles. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `carbon_intensity_elec` | numérico | Intensidad de carbono del ciclo de vida de la generación de electricidad. Gases de efecto invernadero emitidos por unidad de electricidad generada, medidos en gramos de equivalentes de CO₂ por kilovatio-hora. Unidad: gramos de CO₂ equivalentes por kilovatio-hora (gCO₂). |
+| `coal_cons_change_pct` | numérico | Variación porcentual anual del consumo de carbón. Unidad: %. |
+| `coal_cons_change_twh` | numérico | Variación anual del consumo de carbón. Unidad: teravatios-hora (TWh). |
+| `coal_cons_per_capita` | numérico | Consumo de carbón per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `coal_consumption` | numérico | Consumo de energía primaria procedente del carbón. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `coal_elec_per_capita` | numérico | Generación de electricidad a partir de carbón por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `coal_electricity` | numérico | Generación de electricidad a partir del carbón. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `coal_prod_change_pct` | numérico | Variación anual de la producción de carbón. Medido como porcentaje de la producción del año anterior. Unidad: %. |
+| `coal_prod_change_twh` | numérico | Variación anual de la producción de carbón. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `coal_prod_per_capita` | numérico | Producción de carbón per cápita. Medido en kilovatios-hora per cápita. Unidad: kilovatios-hora (kWh). |
+| `coal_production` | numérico | Producción de carbón. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `coal_share_elec` | numérico | Proporción de electricidad generada por carbón. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `coal_share_energy` | numérico | Participación del consumo de energía primaria que proviene del carbón. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `electricity_demand` | numérico | Demanda de electricidad. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `electricity_demand_per_capita` | numérico | Demanda eléctrica total por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `electricity_generation` | numérico | Generación eléctrica total. Electricidad total generada en cada país o región, medida en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `electricity_share_energy` | numérico | Generación total de electricidad como proporción de la energía primaria. Medido como porcentaje del consumo total directo de energía primaria en el país o región. Unidad: %. |
+| `energy_cons_change_pct` | numérico | Variación anual del consumo de energía primaria. Unidad: %. |
+| `energy_cons_change_twh` | numérico | Variación anual del consumo de energía primaria. Unidad: teravatios-hora (TWh). |
+| `energy_per_capita` | numérico | Consumo de energía primaria per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora por persona (kWh). |
+| `energy_per_gdp` | numérico | Consumo de energía primaria por PIB. Medido en kilovatios-hora por dólar internacional. Unidad: kilovatios-hora por $ (kWh). |
+| `fossil_cons_change_pct` | numérico | Variación porcentual anual del consumo de combustibles fósiles. Unidad: %. |
+| `fossil_cons_change_twh` | numérico | Variación anual del consumo de combustibles fósiles. Unidad: teravatios-hora (TWh). |
+| `fossil_elec_per_capita` | numérico | Generación de electricidad a partir de combustibles fósiles por persona. Generación de electricidad a partir de carbón, petróleo y gas, medida en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `fossil_electricity` | numérico | Generación de electricidad a partir de combustibles fósiles. Generación de electricidad a partir de carbón, petróleo y gas, medida en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `fossil_energy_per_capita` | numérico | Consumo de combustibles fósiles per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `fossil_fuel_consumption` | numérico | Consumo de energía primaria procedente de combustibles fósiles. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `fossil_share_elec` | numérico | Proporción de electricidad generada por combustibles fósiles. Generación de electricidad a partir de carbón, petróleo y gas, medida como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `fossil_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de combustibles fósiles. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `gas_cons_change_pct` | numérico | Variación porcentual anual del consumo de gas. Unidad: %. |
+| `gas_cons_change_twh` | numérico | Variación anual del consumo de gas. Unidad: teravatios-hora (TWh). |
+| `gas_consumption` | numérico | Consumo de energía primaria procedente del gas. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `gas_elec_per_capita` | numérico | Generación de electricidad a partir de gas por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `gas_electricity` | numérico | Generación de electricidad a partir de gas. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `gas_energy_per_capita` | numérico | Consumo de gas per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `gas_prod_change_pct` | numérico | Variación anual de la producción de gas. Medido como porcentaje de la producción del año anterior. Unidad: %. |
+| `gas_prod_change_twh` | numérico | Variación anual de la producción de gas. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `gas_prod_per_capita` | numérico | Producción de gas per cápita. Medido en kilovatios-hora per cápita. Unidad: kilovatios-hora (kWh). |
+| `gas_production` | numérico | Producción de gas. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `gas_share_elec` | numérico | Proporción de electricidad generada por gas. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `gas_share_energy` | numérico | Participación del consumo de energía primaria que proviene del gas. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `greenhouse_gas_emissions` | numérico | Emisiones del ciclo de vida procedentes de la generación de electricidad. Medido en megatoneladas de equivalentes de CO₂. Unidad: millones de toneladas equivalentes de CO₂ (Mt). |
+| `hydro_cons_change_pct` | numérico | Cambio porcentual anual en el consumo de energía hidroeléctrica. Las cifras se basan en la generación hidroeléctrica primaria bruta y no tienen en cuenta el suministro de electricidad transfronterizo. Unidad: %. |
+| `hydro_cons_change_twh` | numérico | Cambio anual en el consumo de energía hidroeléctrica. La energía equivalente de entrada se basa en la generación bruta y no tiene en cuenta el suministro de electricidad transfronterizo. Unidad: teravatios-hora (TWh). |
+| `hydro_consumption` | numérico | Consumo de energía primaria proveniente de la energía hidroeléctrica. Medido en teravatios-hora, mediante el método de sustitución. Unidad: teravatios-hora (TWh). |
+| `hydro_elec_per_capita` | numérico | Generación de electricidad a partir de energía hidroeléctrica por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `hydro_electricity` | numérico | Generación de electricidad a partir de energía hidroeléctrica. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `hydro_energy_per_capita` | numérico | Consumo de energía hidroeléctrica per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `hydro_share_elec` | numérico | Proporción de electricidad generada por energía hidroeléctrica. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `hydro_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de la energía hidroeléctrica. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `low_carbon_cons_change_pct` | numérico | Variación porcentual anual del consumo de energía baja en carbono. Las cifras se basan en la generación bruta y no tienen en cuenta el suministro de electricidad transfronterizo. Unidad: %. |
+| `low_carbon_cons_change_twh` | numérico | Cambio anual en el consumo de energía baja en carbono. La energía equivalente de entrada se basa en la generación bruta y no tiene en cuenta el suministro de electricidad transfronterizo. Unidad: teravatios-hora (TWh). |
+| `low_carbon_consumption` | numérico | Consumo de energía primaria procedente de fuentes bajas en carbono. Medido en teravatios-hora, mediante el método de sustitución. Unidad: teravatios-hora (TWh). |
+| `low_carbon_elec_per_capita` | numérico | Generación de electricidad a partir de fuentes bajas en carbono por persona. Medido en kilovatios-hora por persona. Las fuentes bajas en carbono corresponden a las energías renovables y la energía nuclear, que producen significativamente menos emisiones de gases de efecto invernadero que los combustibles fósiles. Las energías renovables incluyen la solar, la eólica, la hidroeléctrica, la bioenergía, la geotérmica, la undimotriz y la mareomotriz. Unidad: kilovatios-hora (kWh). |
+| `low_carbon_electricity` | numérico | Generación de electricidad a partir de fuentes bajas en carbono. Medido en teravatios-hora. Las fuentes bajas en carbono corresponden a las energías renovables y la energía nuclear, que producen significativamente menos emisiones de gases de efecto invernadero que los combustibles fósiles. Las energías renovables incluyen la solar, la eólica, la hidroeléctrica, la bioenergía, la geotérmica, la undimotriz y la mareomotriz. Unidad: teravatios-hora (TWh). |
+| `low_carbon_energy_per_capita` | numérico | Consumo de energía baja en carbono per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `low_carbon_share_elec` | numérico | Proporción de electricidad generada por fuentes bajas en carbono. Medido como porcentaje de la electricidad total producida en el país o región. Las fuentes bajas en carbono corresponden a las energías renovables y la energía nuclear, que producen significativamente menos emisiones de gases de efecto invernadero que los combustibles fósiles. Las energías renovables incluyen la solar, la eólica, la hidroeléctrica, la bioenergía, la geotérmica, la undimotriz y la mareomotriz. Unidad: %. |
+| `low_carbon_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de fuentes bajas en carbono. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `net_elec_imports` | numérico | Importaciones netas de electricidad. Importaciones de electricidad menos exportaciones, medidas en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `net_elec_imports_share_demand` | numérico | Importaciones netas de electricidad como porcentaje de la demanda. Importaciones de electricidad menos exportaciones, medidas como porcentaje de la demanda total de electricidad en el país o región. Unidad: %. |
+| `nuclear_cons_change_pct` | numérico | Variación porcentual anual del consumo de energía nuclear. Las cifras se basan en la generación bruta y no tienen en cuenta el suministro de electricidad transfronterizo. Unidad: %. |
+| `nuclear_cons_change_twh` | numérico | Variación anual del consumo de energía nuclear. La energía equivalente de entrada se basa en la generación bruta y no tiene en cuenta el suministro de electricidad transfronterizo. Unidad: teravatios-hora (TWh). |
+| `nuclear_consumption` | numérico | Consumo de energía primaria procedente de la energía nuclear. Medido en teravatios-hora, mediante el método de sustitución. Unidad: teravatios-hora (TWh). |
+| `nuclear_elec_per_capita` | numérico | Generación de electricidad a partir de energía nuclear por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `nuclear_electricity` | numérico | Generación de electricidad a partir de energía nuclear. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `nuclear_energy_per_capita` | numérico | Consumo de energía nuclear per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `nuclear_share_elec` | numérico | Proporción de electricidad generada por energía nuclear. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `nuclear_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de la energía nuclear. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `oil_cons_change_pct` | numérico | Variación porcentual anual del consumo de petróleo. Unidad: %. |
+| `oil_cons_change_twh` | numérico | Variación anual del consumo de petróleo. Unidad: teravatios-hora (TWh). |
+| `oil_consumption` | numérico | Consumo de energía primaria procedente del petróleo. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `oil_elec_per_capita` | numérico | Generación de electricidad a partir de petróleo por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `oil_electricity` | numérico | Generación de electricidad a partir de petróleo. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `oil_energy_per_capita` | numérico | Consumo de petróleo per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `oil_prod_change_pct` | numérico | Variación anual de la producción de petróleo. Medido como porcentaje de la producción del año anterior. Unidad: %. |
+| `oil_prod_change_twh` | numérico | Variación anual de la producción de petróleo. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `oil_prod_per_capita` | numérico | Producción de petróleo per cápita. Medido en kilovatios-hora per cápita. Unidad: kilovatios-hora (kWh). |
+| `oil_production` | numérico | Producción de petróleo. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `oil_share_elec` | numérico | Proporción de electricidad generada por petróleo. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `oil_share_energy` | numérico | Proporción del consumo de energía primaria que proviene del petróleo. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `other_renewable_consumption` | numérico | Consumo de energía primaria procedente de otras renovables. Medido en teravatios-hora, mediante el método de sustitución. Unidad: teravatios-hora (TWh). |
+| `other_renewable_electricity` | numérico | Generación de electricidad a partir de otras energías renovables, incluida la bioenergía. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `other_renewable_exc_biofuel_electricity` | numérico | Generación de electricidad a partir de otras energías renovables, excluida la bioenergía. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `other_renewables_cons_change_pct` | numérico | Variación porcentual anual del consumo de otras energías renovables. Las cifras se basan en la generación bruta y no tienen en cuenta el suministro de electricidad transfronterizo. Unidad: %. |
+| `other_renewables_cons_change_twh` | numérico | Variación anual del consumo de otras renovables. La energía equivalente de entrada, en teravatios-hora, se basa en la generación bruta y no tiene en cuenta el suministro de electricidad transfronterizo. Unidad: teravatios-hora (TWh). |
+| `other_renewables_elec_per_capita` | numérico | Generación de electricidad a partir de otras energías renovables, incluida la bioenergía, por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `other_renewables_elec_per_capita_exc_biofuel` | numérico | Generación de electricidad a partir de otras energías renovables, excluida la bioenergía, por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `other_renewables_energy_per_capita` | numérico | Otros consumos de energías renovables per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `other_renewables_share_elec` | numérico | Proporción de electricidad generada por otras energías renovables, incluida la bioenergía. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `other_renewables_share_elec_exc_biofuel` | numérico | Proporción de electricidad generada por otras energías renovables, excluida la bioenergía. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `other_renewables_share_energy` | numérico | Participación del consumo de energía primaria que proviene de otras energías renovables. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `per_capita_electricity` | numérico | Generación eléctrica total por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `primary_energy_consumption` | numérico | Consumo de energía primaria. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `renewables_cons_change_pct` | numérico | Variación porcentual anual del consumo de renovables. Unidad: %. |
+| `renewables_cons_change_twh` | numérico | Variación anual del consumo de energías renovables. Unidad: teravatios-hora (TWh). |
+| `renewables_consumption` | numérico | Consumo de energía primaria procedente de renovables. Medido en teravatios-hora, mediante el método de sustitución. Unidad: teravatios-hora (TWh). |
+| `renewables_elec_per_capita` | numérico | Generación de electricidad a partir de energías renovables por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `renewables_electricity` | numérico | Generación de electricidad a partir de energías renovables. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `renewables_energy_per_capita` | numérico | Consumo de energías renovables per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `renewables_share_elec` | numérico | Proporción de electricidad generada por energías renovables. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `renewables_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de energías renovables. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `solar_cons_change_pct` | numérico | Variación porcentual anual en el consumo de energía solar. Las cifras se basan en la generación bruta y no tienen en cuenta el suministro de electricidad transfronterizo. Unidad: %. |
+| `solar_cons_change_twh` | numérico | Variación anual del consumo de energía solar. La energía equivalente de entrada, en teravatios-hora, se basa en la generación bruta y no tiene en cuenta el suministro de electricidad transfronterizo. Unidad: teravatios-hora (TWh). |
+| `solar_consumption` | numérico | Consumo de energía primaria procedente de energía solar. Medido en teravatios-hora, mediante el método de sustitución. Unidad: teravatios-hora (TWh). |
+| `solar_elec_per_capita` | numérico | Generación de electricidad a partir de energía solar por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `solar_electricity` | numérico | Generación de electricidad a partir de energía solar. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `solar_energy_per_capita` | numérico | Consumo de energía solar per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `solar_share_elec` | numérico | Proporción de electricidad generada por energía solar. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `solar_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de la energía solar. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
+| `wind_cons_change_pct` | numérico | Variación porcentual anual del consumo de energía eólica. Las cifras se basan en la generación bruta y no tienen en cuenta el suministro de electricidad transfronterizo. Unidad: %. |
+| `wind_cons_change_twh` | numérico | Variación anual del consumo de energía eólica. La energía equivalente de entrada, en teravatios-hora, se basa en la generación bruta y no tiene en cuenta el suministro de electricidad transfronterizo. Unidad: teravatios-hora (TWh). |
+| `wind_consumption` | numérico | Consumo de energía primaria procedente de la energía eólica. Medido en teravatios-hora, mediante el método de sustitución. Unidad: teravatios-hora (TWh). |
+| `wind_elec_per_capita` | numérico | Generación de electricidad a partir de energía eólica por persona. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `wind_electricity` | numérico | Generación de electricidad a partir de energía eólica. Medido en teravatios-hora. Unidad: teravatios-hora (TWh). |
+| `wind_energy_per_capita` | numérico | Consumo de energía eólica per cápita. Medido en kilovatios-hora por persona. Unidad: kilovatios-hora (kWh). |
+| `wind_share_elec` | numérico | Proporción de electricidad generada por energía eólica. Medido como porcentaje de la electricidad total producida en el país o región. Unidad: %. |
+| `wind_share_energy` | numérico | Proporción del consumo de energía primaria que proviene de la energía eólica. Medida como porcentaje de la energía primaria total, mediante el método de sustitución. Unidad: %. |
 
 ---
 
@@ -323,23 +418,7 @@ Los nombres de columna son largos; en pipelines (p. ej. Spark o pandas) suele re
 
 ---
 
-### 6.2 Metadatos del indicador — `World_Bank_Group/Metadata_Indicator_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv`
-
-| Metadato | Valor |
-|----------|-------|
-| Registros (definición del indicador) | 1 |
-| Columnas | 4 |
-
-| Campo | Descripción |
-|-------|-------------|
-| `INDICATOR_CODE` | `BX.GSR.CCIS.CD` |
-| `INDICATOR_NAME` | Nombre largo del indicador (inglés). |
-| `SOURCE_NOTE` | Definición ampliada: alcance de “servicios TIC” y moneda (USD corrientes). |
-| `SOURCE_ORGANIZATION` | Entidad que provee la serie subyacente (p. ej. FMI / BoP). |
-
----
-
-### 6.3 Metadatos por economía — `World_Bank_Group/Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv`
+### 6.2 Metadatos por economía — `World_Bank_Group/Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv`
 
 | Metadato | Valor |
 |----------|-------|
