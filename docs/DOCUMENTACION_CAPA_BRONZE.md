@@ -1,6 +1,6 @@
 # Documentación técnica — capa Bronze (ingesta)
 
-Este documento centraliza la **documentación técnica de la ingesta y materialización en Bronze** del proyecto. Se irá ampliando conforme se añadan fuentes (S3, APIs, particionado Hive, etc.). La primera entrega cubre los **logs sintéticos de uso de IA** generados con el script basado en Faker.
+Este documento centraliza la **documentación técnica de la ingesta y materialización en Bronze** del proyecto. Cubre la generación de **logs sintéticos** (Faker), la **carga de CSV al bucket S3** y el inventario por prefijo; se ampliará con la API Electricity Maps y otros pipelines.
 
 ---
 
@@ -106,26 +106,81 @@ python scripts/generate_synthetic_usage_logs.py --rows 50000 --seed 42
 
 ---
 
-## 4. Versionado y almacenamiento
+## 4. Almacenamiento en Amazon S3 (Bronze)
 
-- Los CSV grandes de Bronze suelen **excluirse del control de versiones** (política del equipo / `.gitignore`). El **contrato** queda en el diccionario de datos y en este documento; la **reproducción** del dataset es ejecutando el script con la misma semilla y los mismos CSV MLCO2.
-- Si en el futuro se adopta **particionado** por fecha (`year=/month=/day=`) o carga a **S3**, documentar aquí la convención de rutas, el formato de partición y el job que escribe Bronze.
+Los datasets actuales del repositorio (más los logs sintéticos) se **subieron al bucket** usando el script de carga. La generación local de los logs y la subida son **pasos distintos** (dos scripts).
+
+### 4.1 Scripts involucrados
+
+| Script | Función |
+|--------|---------|
+| `scripts/generate_synthetic_usage_logs.py` | Genera el CSV de sesiones en `bronze/usage_logs/usage_logs.csv` (Faker + catálogos MLCO2 locales). |
+| `scripts/upload_bronze_to_s3.py` | Sube al bucket los archivos listados abajo; lee variables desde `.env` en la raíz del repo (`python-dotenv`): `AWS_S3_BUCKET`, `AWS_DEFAULT_REGION`, credenciales o `AWS_PROFILE`. |
+
+Comandos típicos:
+
+```bash
+pip install -r requirements.txt
+python scripts/generate_synthetic_usage_logs.py --rows 50000 --seed 42
+python scripts/upload_bronze_to_s3.py
+```
+
+### 4.2 Organización del bucket
+
+**Nombre del bucket:** `green-ai-pf-bronze-a0e96d06`  
+**URI base:** `s3://green-ai-pf-bronze-a0e96d06/`
+
+En S3, las “carpetas” son **prefijos**. La primera jerarquía del bucket (sin carpeta intermedia `bronze/`) queda organizada así:
+
+```
+s3://green-ai-pf-bronze-a0e96d06/
+├── electricity_maps/          # reservado: ingesta API Electricity Maps (pendiente; §6)
+├── global_petrol_prices/
+├── mlco2/
+├── owid/
+├── usage_logs/
+└── world_bank/
+```
+
+**Documento guardado por carpeta (prefijo)** — mismo contenido que sube `scripts/upload_bronze_to_s3.py`:
+
+| Carpeta (prefijo) | Documento(s) en el bucket | Origen en el repositorio |
+|-------------------|---------------------------|---------------------------|
+| `electricity_maps/` | *Ninguno aún* (reservado para JSON/CSV de la API Electricity Maps). | — |
+| `global_petrol_prices/` | `electricity_prices_by_country_2023_2026_avg.csv` | `data/Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` |
+| `mlco2/` | `gpus.csv` | `data/Code_Carbon/gpus.csv` |
+| `mlco2/` | `instances.csv` | `data/Code_Carbon/instances.csv` |
+| `mlco2/` | `impact.csv` | `data/Code_Carbon/impact.csv` |
+| `mlco2/` | `2021-10-27yearly_averages.csv` | `data/Code_Carbon/2021-10-27yearly_averages.csv` |
+| `owid/` | `owid-energy-data.csv` | `data/Our_World_In_Data/owid-energy-data.csv` |
+| `usage_logs/` | `usage_logs.csv` | `bronze/usage_logs/usage_logs.csv` (generado con `scripts/generate_synthetic_usage_logs.py`) |
+| `world_bank/` | `API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` | `data/World_Bank_Group/API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` |
+| `world_bank/` | `Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` | `data/World_Bank_Group/Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` |
+
+Ejemplo de clave S3 completa: `s3://green-ai-pf-bronze-a0e96d06/usage_logs/usage_logs.csv`.
+
+*Nota:* si añades más CSV al repo (p. ej. otro extracto del Banco Mundial), incorpóralos en `upload_bronze_to_s3.py` y actualiza esta tabla.
 
 ---
 
-## 5. Próximas extensiones (plantilla)
+## 5. Versionado y almacenamiento
 
-Las siguientes secciones se pueden añadir cuando exista implementación:
-
-- Ingesta desde **Amazon S3** (bucket, prefijo, credenciales, formato).
-- **Particionado** y esquema de directorios bajo `bronze/usage_logs/`.
-- **Metadatos** (Airflow DAG id, run id, checksum).
-- Otros datasets Bronze (p. ej. respuestas crudas de API Electricity Maps).
+- Los CSV grandes de Bronze suelen **excluirse del control de versiones** (política del equipo / `.gitignore`). El **contrato** queda en el diccionario de datos y en este documento; la **reproducción** del dataset de logs es ejecutando `generate_synthetic_usage_logs.py` con la misma semilla y los mismos CSV MLCO2.
+- La **copia en S3** actúa como almacén operativo para ingesta en motores (Athena, Spark, etc.); los objetos por prefijo están en §4.2.
 
 ---
 
-## 6. Referencias cruzadas
+## 6. Próximas extensiones
+
+- **Electricity Maps API:** ingesta de respuestas JSON (o CSV derivado) bajo el prefijo `electricity_maps/`; script o DAG dedicado (pendiente).
+- **Particionado** por fecha en `usage_logs/` (`year=/month=/day=`) si el volumen o el motor lo requieren.
+- **Metadatos** de carga (run id, checksum, fecha de ingesta).
+
+---
+
+## 7. Referencias cruzadas
 
 - `docs/DICCIONARIO_DE_DATOS.md` — §4 Generador de logs (sintético), §4.0 principios.
 - `docs/PREGUNTAS_DE_NEGOCIO.md` — uso de logs en preguntas de movilidad y huella.
 - `scripts/generate_synthetic_usage_logs.py` — implementación fuente de verdad del comportamiento descrito.
+- `scripts/upload_bronze_to_s3.py` — carga de CSV al bucket Bronze en S3.
