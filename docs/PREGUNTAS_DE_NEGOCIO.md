@@ -13,7 +13,7 @@ La nomenclatura de rutas es relativa a la raíz del repositorio salvo que se ind
 | Aspecto | Detalle |
 |--------|---------|
 | **Datos requeridos** | Energía del trabajo de entrenamiento (kWh); intensidad de carbono del origen y del destino en la ventana temporal considerada (gCO₂eq/kWh); opcionalmente mix o granularidad horaria para definir “horas verdes”. |
-| **Fuentes** | **Logs sintéticos:** campos `region`, `gpu_model`, `duration_hours`, `gpu_utilization`, `energy_consumed_kwh`, `job_type`, `timestamp` (ver sección 4 de `DICCIONARIO_DE_DATOS.md`). **Catálogo GPU:** `MLCO2/gpus.csv` (TDP si recalculas energía). **Intensidad en tiempo (origen/destino):** API **Electricity Maps** — endpoints de intensidad *Latest* / *Past* / *History* (campos `zone`, `carbonIntensity`, `datetime`); documentado en sección 2 de `DICCIONARIO_DE_DATOS.md` y `datos-api.md`. **Alternativa anual o por zona:** `MLCO2/impact.csv` (`impact` en gCO₂eq/kWh por `region`) o `MLCO2/2021-10-27yearly_averages.csv`; **serie histórica país:** `OWID/owid-energy-data.csv` — columna `carbon_intensity_elec` (no sustituye la granularidad horaria). **Mapeo geográfico:** catálogo de zonas de Electricity Maps (sección 2.3) para alinear `zone` ↔ país. |
+| **Fuentes** | **Logs sintéticos:** campos `region`, `gpu_model`, `duration_hours`, `gpu_utilization`, `energy_consumed_kwh`, `job_type`, `timestamp` (ver sección 4 de `DICCIONARIO_DE_DATOS.md`). **Catálogo GPU:** `MLCO2/gpus.csv` (TDP si recalculas energía). **Intensidad en tiempo (origen/destino):** API **Electricity Maps** — endpoints de intensidad *Latest* / *Past* / *History* (campos `zone`, `carbonIntensity`, `datetime`); documentado en sección 2 de `DICCIONARIO_DE_DATOS.md` y `datos-api.md`. **Alternativa anual o por zona:** `MLCO2/impact.csv` (`impact` en gCO₂eq/kWh por `region`) o `MLCO2/2021-10-27yearly_averages.csv`; **serie histórica país:** `OWID/owid-energy-data.csv` — columna `carbon_intensity_elec` (no sustituye la granularidad horaria). **Mapeo geográfico:** `bronze/reference/geo_cloud_to_country_and_zones.csv` (región cloud ↔ zona EM ↔ ISO); catálogo de zonas de Electricity Maps (sección 2.3 del diccionario). |
 | **Operaciones** | Filtrar sesiones `job_type = Training` (o la definición acordada). Unir logs con factor de intensidad por `zone` y ventana de tiempo. Para “horas verdes”: filtrar/agrupar por hora donde `carbonIntensity` ≤ umbral o percentil; calcular \(\Delta\) emisiones \(=\) kWh × (CI\_origen − CI\_destino) por intervalo; sumar y convertir g → **tCO₂eq**. Para **% reducción:** comparar huella en origen vs escenario destino sobre el mismo kWh. Normalizar zonas horarias si comparas países distintos. |
 
 ---
@@ -24,9 +24,9 @@ La nomenclatura de rutas es relativa a la raíz del repositorio salvo que se ind
 
 | Aspecto | Detalle |
 |--------|---------|
-| **Datos requeridos** | Especificaciones por GPU (TDP, opcionalmente TFLOPS/W); precio de electricidad (USD/kWh) por país; factor de emisión (gCO₂eq/kWh) por región o país; región de cómputo asociada al escenario. |
-| **Fuentes** | `MLCO2/gpus.csv` — `name`, `tdp_watts`, `GFLOPS32/W`, `GFLOPS16/W`. `Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` — tarifas residencial/negocio (renombrar columnas en pipeline). `MLCO2/impact.csv` — `region`, `impact`, `offsetRatio`. API Electricity Maps o `OWID/owid-energy-data.csv` (`carbon_intensity_elec`) para consistencia país-año. Tabla de mapeo **país ↔ código ISO ↔ región cloud** (lógica de negocio / dimensión auxiliar no listada como archivo único: derivar en Silver). |
-| **Operaciones** | Para cada GPU y país/región: estimar costo por hora \(\approx\) (TDP/1000) × USD/kWh (ajustar por utilización si el KPI es por sesión real). Estimar emisiones por hora \(\approx\) (TDP/1000) × gCO₂eq/kWh. Opcional: dividir por TFLOPS para **costo/TFLOP** y **gCO₂eq/TFLOP**. Normalizar moneda y año. Puede ponderarse con pesos ONG (ej. 60 % costo / 40 % carbono). |
+| **Datos requeridos** | Especificaciones por GPU (TDP, opcionalmente TFLOPS/W); precio de electricidad (USD/kWh) por país; factor de emisión (gCO₂eq/kWh) por región o país; región de cómputo asociada al escenario. **Opcional (TCO cómputo):** tarifa horaria instancia (`bronze/reference/aws_ec2_on_demand_usd_per_hour.csv`) para coste ≈ horas × USD/h además del coste eléctrico. |
+| **Fuentes** | `MLCO2/gpus.csv` — `name`, `tdp_watts`, `GFLOPS32/W`, `GFLOPS16/W`. `Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` — tarifas residencial/negocio (renombrar columnas en pipeline). `MLCO2/impact.csv` — `region`, `impact`, `offsetRatio`. API Electricity Maps o `OWID/owid-energy-data.csv` (`carbon_intensity_elec`) para consistencia país-año. **Mapeo geográfico:** `bronze/reference/geo_cloud_to_country_and_zones.csv` (región cloud ↔ ISO ↔ nombre país precios ↔ zona EM); ver sección 7 de `DICCIONARIO_DE_DATOS.md`. **Precio instancia (proxy TCO):** `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv` (sección 8 del diccionario); join por `region` + `instance_type` de logs. |
+| **Operaciones** | Para cada GPU y país/región: **costo eléctrico** por hora \(\approx\) (TDP/1000) × USD/kWh (ajustar por utilización si el KPI es por sesión real). **Costo cómputo (proxy TCO):** por sesión \(\approx\) `duration_hours` × `price_usd_per_hour` del catálogo EC2 (misma `region` e `instance_type` que el log). Estimar emisiones por hora \(\approx\) (TDP/1000) × gCO₂eq/kWh. Opcional: dividir por TFLOPS para **costo/TFLOP** y **gCO₂eq/TFLOP**. Normalizar moneda y año. Puede ponderarse con pesos ONG (ej. 60 % costo / 40 % carbono); aclarar si “costo” mezcla electricidad, instancia o ambos. |
 
 ---
 
@@ -73,7 +73,7 @@ La nomenclatura de rutas es relativa a la raíz del repositorio salvo que se ind
 | Aspecto | Detalle |
 |--------|---------|
 | **Datos requeridos** | Línea base de consumo energético atribuible a cargas de IA (kWh) por país o región; supuesto de shock (+20%) sobre esa línea base; intensidad media de carbono por país (gCO₂eq/kWh) para pasar energía → emisiones; opcionalmente demanda eléctrica total del país para contextualizar (% sobre total). |
-| **Fuentes** | **Línea base (proxy):** agregación de `energy_consumed_kwh` en logs por `region` → mapeo región → país (dimensión derivada). **Demanda eléctrica total:** `OWID/owid-energy-data.csv` — `electricity_demand` o `electricity_generation`. **Intensidad:** `carbon_intensity_elec` u OWID `greenhouse_gas_emissions` con cuidado de unidades. **Lista Latam:** filtro por países. |
+| **Fuentes** | **Línea base (proxy):** agregación de `energy_consumed_kwh` en logs por `region` → mapeo región → país vía `bronze/reference/geo_cloud_to_country_and_zones.csv`. **Demanda eléctrica total:** `OWID/owid-energy-data.csv` — `electricity_demand` o `electricity_generation`. **Intensidad:** `carbon_intensity_elec` u OWID `greenhouse_gas_emissions` con cuidado de unidades. **Lista Latam:** filtro por países. |
 | **Operaciones** | Definir explícitamente el **supuesto**: el +20% aplica al volumen de kWh de IA agregado en logs (o a un subconjunto). Escenario: kWh\_nuevo = kWh\_base × 1.2; emisiones\_delta = kWh\_delta × CI. Desagregar por país vía tabla puente región–país. Reportar como **escenario**, no como pronóstico macro oficial. |
 
 ---
@@ -121,7 +121,7 @@ La nomenclatura de rutas es relativa a la raíz del repositorio salvo que se ind
 | Aspecto | Detalle |
 |--------|---------|
 | **Datos requeridos** | Agregado de kWh o número de sesiones por región/país (proxy escala); intensidad de carbono eléctrica por mismo país/año. |
-| **Fuentes** | Logs — agregación por `region`. `OWID/owid-energy-data.csv` — `carbon_intensity_elec`, `iso_code`, `year`. Mapeo **cloud region → país** (tabla de dimensión en Gold). Opcional: `MLCO2/impact.csv` por `region` para alinear con códigos de proveedor. |
+| **Fuentes** | Logs — agregación por `region`. `OWID/owid-energy-data.csv` — `carbon_intensity_elec`, `iso_code`, `year`. Mapeo **cloud region → país** (`bronze/reference/geo_cloud_to_country_and_zones.csv`; curación adicional en Gold si aplica). Opcional: `MLCO2/impact.csv` por `region` para alinear con códigos de proveedor. |
 | **Operaciones** | Sumar kWh por país (vía mapeo). Join con OWID en el año de referencia. Scatter: volumen vs CI; identificar outliers (alto volumen + alta CI). **Nota:** no hay en el repositorio un inventario oficial de data centers; el volumen de logs es **proxy operativo**, no densidad física de DC. |
 
 ---
@@ -137,6 +137,8 @@ La nomenclatura de rutas es relativa a la raíz del repositorio salvo que se ind
 | `MLCO2/*.csv` | Hardware, factores por región de cloud, promedios anuales por zona. |
 | `Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` | Precio USD/kWh para KPIs económicos. |
 | `World_Bank_Group/API_BX.GSR.CCIS.CD_...` | Exportaciones de servicios TIC. |
+| `bronze/reference/geo_cloud_to_country_and_zones.csv` | Mapeo región AWS ↔ ISO ↔ país (precios) ↔ zona Electricity Maps. |
+| `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv` | Precio horario On-Demand EC2 (Linux) por región y tipo de instancia MLCO2. |
 | Logs sintéticos (especificación en diccionario §4) | Sesiones de IA: energía, GPU, región, tipo de job, estado. |
 
 ---
@@ -144,5 +146,5 @@ La nomenclatura de rutas es relativa a la raíz del repositorio salvo que se ind
 ## Supuestos transversales (documentar en el proyecto)
 
 - Los **logs sintéticos** son una simulación: los absolutos no sustituyen estadísticas oficiales de consumo de IA por país.
-- **Región cloud ↔ país ↔ zona Electricity Maps** requiere una **dimensión de referencia** mantenida en el ELT (Gold o catálogo).
+- **Región cloud ↔ país ↔ zona Electricity Maps** se materializa en Bronze como **`bronze/reference/geo_cloud_to_country_and_zones.csv`** (dimensión de referencia versionada); Silver/Gold consumen este archivo o su copia en `s3://.../reference/`.
 - Unidades: unificar **gCO₂eq** vs **tCO₂eq**; **kWh** frente a **MWh** en visualizaciones.
