@@ -1,73 +1,52 @@
 # Documentación técnica — capa Bronze (ingesta)
 
-Este documento centraliza la **documentación técnica de la ingesta y materialización en Bronze** del proyecto. Cubre la generación de **logs sintéticos** (Faker), la **carga de CSV al bucket S3** y el inventario por prefijo; se ampliará con la API Electricity Maps y otros pipelines.
+Guía operativa de Bronze: qué se genera, qué se carga a S3 y cómo está organizado el bucket. Incluye `usage_logs`, catálogos `reference/` y la ingesta JSON de Electricity Maps.
 
 ---
 
 ## 1. Rol de la capa Bronze
 
-En el diseño del lakehouse del repositorio, **Bronze** almacena datos **crudos o mínimamente transformados**, tal como se generan o reciben, para trazabilidad y reprocesamiento. La capa **Silver** aplica limpieza, validación y normalización; **Gold** responde preguntas de negocio.
+Bronze almacena datos crudos o mínimamente transformados para trazabilidad y reproceso. Silver limpia/normaliza y Gold sirve analítica de negocio.
 
 | Aspecto | Criterio en este repo |
 |--------|------------------------|
-| Formato | CSV UTF-8 con cabecera (implementación actual de usage logs). |
-| Ubicación | `bronze/<dataset>/` bajo la raíz del repositorio (o equivalente en bucket S3 en despliegue). |
-| Contrato de datos | Definido en `docs/DICCIONARIO_DE_DATOS.md` (sección 4 y §4.0). |
+| Formato | CSV UTF-8 con cabecera y JSON (Electricity Maps). |
+| Ubicación | Local: `bronze/<dataset>/`. S3: prefijos en `s3://green-ai-pf-bronze-a0e96d06/`. |
+| Contrato de datos | Definido en `docs/DICCIONARIO_DE_DATOS.md` (§4 logs, §7 mapeo geo, §8 precios EC2). |
 
 ---
 
 ## 2. Dataset: logs sintéticos de uso de IA (`usage_logs`)
 
-### 2.1 Objetivo
+Objetivo: simular sesiones de cómputo con claves compatibles con MLCO2 (`gpus.csv`, `instances.csv`, `impact.csv`) para evitar joins vacíos en capas posteriores.
 
-Simular **sesiones de cómputo** (entrenamiento / inferencia / fine-tuning) con campos alineados a catálogos **MLCO2** (`gpus.csv`, `instances.csv`, `impact.csv`) para que los joins posteriores (p. ej. en Spark) con factores de emisión y hardware **no produzcan resultados vacíos por claves inventadas**.
-
-### 2.2 Artefacto generado
+Artefacto:
 
 | Elemento | Valor |
 |----------|--------|
 | Script | `scripts/generate_synthetic_usage_logs.py` |
 | Salida por defecto | `bronze/usage_logs/usage_logs.csv` |
-| Dependencia Python | `faker` (ver `requirements.txt`) |
+| Dependencia | `faker` |
 | Semilla | `random` y `Faker` se inicializan con `--seed` para reproducibilidad |
 
-### 2.3 Prerrequisitos (modo estricto, por defecto)
-
-El script espera una carpeta MLCO2 con al menos:
+Prerrequisitos (modo estricto):
 
 | Archivo | Uso |
 |---------|-----|
-| `gpus.csv` | Filas `type=gpu` con `tdp_watts` numérico; resolución del modelo de GPU y TDP para energía. |
-| `instances.csv` | Filas `provider=aws`; pares `(id, gpu)` para `instance_type` y acoplamiento con GPU. |
-| `impact.csv` | Filas `provider=aws`; columna `region` como **única fuente** de códigos de región. |
+| `gpus.csv` | Catálogo de GPU y TDP. |
+| `instances.csv` | Relación instancia AWS ↔ GPU. |
+| `impact.csv` | Fuente de regiones AWS válidas. |
 
-Ruta por defecto: `<raíz-repo>/data/Code_Carbon/`. Se puede sobrescribir con `--mlco2-dir`.
+Ruta por defecto: `data/Code_Carbon/` (override: `--mlco2-dir`).  
+Si falta un insumo, falla (salvo `--allow-fallback`, solo para pruebas).
 
-Si falta alguno de estos insumos, el script **termina con error** salvo que se use `--allow-fallback` (solo recomendado para pruebas sin CSV; los valores incrustados **no** garantizan consistencia con tu `impact.csv` real).
+Puntos de diseño:
+- Regiones solo desde `impact.csv`.
+- Validación de coherencia instancia/GPU al inicio.
+- Movilidad regional por usuario con `--mobility-regions-per-user`.
+- Filas sucias controladas con `--edge-case-rate` para pruebas de calidad en Silver.
 
-### 2.4 Validación de integridad en arranque
-
-- **Instancias vs GPUs:** cada `gpu` declarado en `instances.csv` (AWS) debe poder mapearse a una entrada de `gpus.csv` (coincidencia exacta de `name` o prefijo, según la lógica del script). Si no, el proceso falla con mensaje explícito.
-- **Regiones:** nunca se generan regiones fuera del conjunto AWS extraído de `impact.csv` (evita el antipatrón “región inventada” que rompe el join con factores de carbono).
-
-### 2.5 Movilidad regional
-
-Cada uno de los **500** `user_id` (`USER_000` … `USER_499`) recibe un **pool** de varias regiones (por defecto **4**), todas elegidas **solo** del catálogo `impact.csv`. En cada sesión, la región se elige **dentro del pool de ese usuario**. Así, un mismo usuario puede tener historial en regiones distintas (p. ej. zonas con distinta intensidad de carbono), lo que habilita análisis de “desplazamiento” de cómputo en capas posteriores o en dashboards.
-
-Parámetro: `--mobility-regions-per-user` (mínimo efectivo 2 si el catálogo tiene al menos 2 regiones).
-
-### 2.6 Datos deliberadamente sucios (Bronze)
-
-Aproximadamente **`--edge-case-rate`** de las filas (por defecto **1 %**) llevan:
-
-- `duration_hours` **vacío** o **negativo**, y  
-- `energy_consumed_kwh` **vacío** (no se calcula energía a partir de duración inválida).
-
-Sirve para demostrar reglas de calidad y limpieza en **Silver** (Spark, Great Expectations, etc.). Con `--edge-case-rate 0` se desactiva.
-
-### 2.7 Esquema del CSV (orden de columnas)
-
-Orden fijo de cabecera (alineado al diccionario de datos §4.1 y §4.2):
+Esquema principal del CSV:
 
 | Columna | Tipo lógico | Notas |
 |---------|-------------|--------|
@@ -83,7 +62,7 @@ Orden fijo de cabecera (alineado al diccionario de datos §4.1 y §4.2):
 | `energy_consumed_kwh` | float o vacío | `(duration_hours × TDP_W × gpu_utilization) / 1000` si la duración es válida. |
 | `execution_status` | string | `Success` (~95 %) o `Failed` (~5 %). |
 
-La definición de negocio y ejemplos adicionales están en `docs/DICCIONARIO_DE_DATOS.md` (§4 y §4.0).
+Definición de negocio y ejemplos: `docs/DICCIONARIO_DE_DATOS.md` (§4).
 
 ---
 
@@ -96,11 +75,11 @@ python scripts/generate_synthetic_usage_logs.py --rows 50000 --seed 42
 
 | Parámetro | Descripción |
 |-----------|-------------|
-| `--rows` | Número de filas (por defecto 50000; típico 10k–100k). |
+| `--rows` | Número de filas (default 50000). |
 | `--seed` | Semilla reproducible. |
 | `--mlco2-dir` | Directorio con `gpus.csv`, `instances.csv`, `impact.csv`. |
 | `--output` | Ruta del CSV de salida. |
-| `--allow-fallback` | Usa catálogos mínimos si faltan CSV (no usar en pipelines con MLCO2 real). |
+| `--allow-fallback` | Permite catálogos mínimos si faltan CSV (solo pruebas). |
 | `--edge-case-rate` | Fracción [0,1] de filas con duración/energía inválidas (0 = ninguna). |
 | `--mobility-regions-per-user` | Tamaño del pool de regiones por usuario. |
 
@@ -108,14 +87,16 @@ python scripts/generate_synthetic_usage_logs.py --rows 50000 --seed 42
 
 ## 4. Almacenamiento en Amazon S3 (Bronze)
 
-Los datasets actuales del repositorio (más los logs sintéticos) se **subieron al bucket** usando el script de carga. La generación local de los logs y la subida son **pasos distintos** (dos scripts).
+Los datasets actuales y la ingesta de Electricity Maps ya están cargados en el bucket Bronze.
 
 ### 4.1 Scripts involucrados
 
 | Script | Función |
 |--------|---------|
-| `scripts/generate_synthetic_usage_logs.py` | Genera el CSV de sesiones en `bronze/usage_logs/usage_logs.csv` (Faker + catálogos MLCO2 locales). |
-| `scripts/upload_bronze_to_s3.py` | Sube al bucket los archivos listados abajo; lee variables desde `.env` en la raíz del repo (`python-dotenv`): `AWS_S3_BUCKET`, `AWS_DEFAULT_REGION`, credenciales o `AWS_PROFILE`. |
+| `scripts/generate_synthetic_usage_logs.py` | Genera `bronze/usage_logs/usage_logs.csv`. |
+| `scripts/build_aws_ec2_pricing_reference.py` | Regenera `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv`. |
+| `scripts/upload_bronze_to_s3.py` | Sube CSV al bucket Bronze (`AWS_S3_BUCKET`, `AWS_PROFILE`, etc.). |
+| `scripts/ingest_electricity_maps.py` | Consume API y sube JSON al prefijo `electricity_maps/`. |
 
 Comandos típicos:
 
@@ -130,52 +111,71 @@ python scripts/upload_bronze_to_s3.py
 **Nombre del bucket:** `green-ai-pf-bronze-a0e96d06`  
 **URI base:** `s3://green-ai-pf-bronze-a0e96d06/`
 
-En S3, las “carpetas” son **prefijos**. La primera jerarquía del bucket (sin carpeta intermedia `bronze/`) queda organizada así:
+En S3, las carpetas son prefijos:
 
 ```
 s3://green-ai-pf-bronze-a0e96d06/
-├── electricity_maps/          # reservado: ingesta API Electricity Maps (pendiente; §6)
+├── electricity_maps/          # JSON API Electricity Maps (`scripts/ingest_electricity_maps.py`; §6)
 ├── global_petrol_prices/
 ├── mlco2/
 ├── owid/
-├── reference/                 # catálogos de referencia (mapeo geográfico, etc.)
+├── reference/                 # geo_cloud_to_country_and_zones.csv + aws_ec2_on_demand_usd_per_hour.csv
 ├── usage_logs/
 └── world_bank/
 ```
 
-**Documento guardado por carpeta (prefijo)** — mismo contenido que sube `scripts/upload_bronze_to_s3.py`:
+Documentos por prefijo:
 
 | Carpeta (prefijo) | Documento(s) en el bucket | Origen en el repositorio |
 |-------------------|---------------------------|---------------------------|
-| `electricity_maps/` | *Ninguno aún* (reservado para JSON/CSV de la API Electricity Maps). | — |
-| `reference/` | `geo_cloud_to_country_and_zones.csv` | `bronze/reference/geo_cloud_to_country_and_zones.csv` |
-| `reference/` | `aws_ec2_on_demand_usd_per_hour.csv` | `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv` (regenerar: `python scripts/build_aws_ec2_pricing_reference.py`) |
+| `electricity_maps/` | `electricity_mix/latest`, `carbon_intensity/{latest,past,history,past-range}`, `zones/catalog`. | `scripts/ingest_electricity_maps.py` (carga ya operativa en este bucket). |
+| `reference/` | `geo_cloud_to_country_and_zones.csv` | `bronze/reference/geo_cloud_to_country_and_zones.csv` (diccionario §7). |
+| `reference/` | `aws_ec2_on_demand_usd_per_hour.csv` | `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv` (diccionario §8). |
 | `global_petrol_prices/` | `electricity_prices_by_country_2023_2026_avg.csv` | `data/Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` |
 | `mlco2/` | `gpus.csv` | `data/Code_Carbon/gpus.csv` |
 | `mlco2/` | `instances.csv` | `data/Code_Carbon/instances.csv` |
 | `mlco2/` | `impact.csv` | `data/Code_Carbon/impact.csv` |
 | `mlco2/` | `2021-10-27yearly_averages.csv` | `data/Code_Carbon/2021-10-27yearly_averages.csv` |
 | `owid/` | `owid-energy-data.csv` | `data/Our_World_In_Data/owid-energy-data.csv` |
-| `usage_logs/` | `usage_logs.csv` | `bronze/usage_logs/usage_logs.csv` (generado con `scripts/generate_synthetic_usage_logs.py`) |
+| `usage_logs/` | `usage_logs.csv` | `bronze/usage_logs/usage_logs.csv` |
 | `world_bank/` | `API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` | `data/World_Bank_Group/API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` |
 | `world_bank/` | `Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` | `data/World_Bank_Group/Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv` |
 
-Ejemplo de clave S3 completa: `s3://green-ai-pf-bronze-a0e96d06/usage_logs/usage_logs.csv`.
+Ejemplos de clave S3 completa:
 
-*Nota:* si añades más CSV al repo (p. ej. otro extracto del Banco Mundial), incorpóralos en `upload_bronze_to_s3.py` y actualiza esta tabla.
+- `s3://green-ai-pf-bronze-a0e96d06/usage_logs/usage_logs.csv`
+- `s3://green-ai-pf-bronze-a0e96d06/reference/geo_cloud_to_country_and_zones.csv`
+- `s3://green-ai-pf-bronze-a0e96d06/reference/aws_ec2_on_demand_usd_per_hour.csv`
+
+Estructura de carpetas (prefijos) relevante dentro de `electricity_maps/`:
+
+```
+s3://green-ai-pf-bronze-a0e96d06/electricity_maps/
+├── zones/
+│   └── catalog/<run_slug>.json
+├── electricity_mix/
+│   └── latest/zone=<ZONE>/<run_slug>.json
+└── carbon_intensity/
+    ├── latest/zone=<ZONE>/<run_slug>.json
+    ├── past/zone=<ZONE>/datetime=<ISO>/<run_slug>.json
+    ├── history/zone=<ZONE>/<run_slug>.json
+    └── past-range/zone=<ZONE>/start=<ISO>/end=<ISO>/<run_slug>.json
+```
+
+Si se agrega un nuevo dataset, actualizar `scripts/upload_bronze_to_s3.py` y esta tabla.
 
 ---
 
 ## 5. Versionado y almacenamiento
 
-- Los CSV grandes de Bronze suelen **excluirse del control de versiones** (política del equipo / `.gitignore`). El **contrato** queda en el diccionario de datos y en este documento; la **reproducción** del dataset de logs es ejecutando `generate_synthetic_usage_logs.py` con la misma semilla y los mismos CSV MLCO2.
-- La **copia en S3** actúa como almacén operativo para ingesta en motores (Athena, Spark, etc.); los objetos por prefijo están en §4.2.
+- Los CSV grandes suelen excluirse del versionado; el contrato vive en el diccionario y esta documentación.
+- S3 es el almacén operativo para consumo en Athena/Spark.
 
 ---
 
 ## 6. Próximas extensiones
 
-- **Electricity Maps API:** ingesta de respuestas JSON (o CSV derivado) bajo el prefijo `electricity_maps/`; script o DAG dedicado (pendiente).
+- **Electricity Maps API:** mantener corrida programada de `scripts/ingest_electricity_maps.py` (token en `.env`).
 - **Particionado** por fecha en `usage_logs/` (`year=/month=/day=`) si el volumen o el motor lo requieren.
 - **Metadatos** de carga (run id, checksum, fecha de ingesta).
 
@@ -183,7 +183,9 @@ Ejemplo de clave S3 completa: `s3://green-ai-pf-bronze-a0e96d06/usage_logs/usage
 
 ## 7. Referencias cruzadas
 
-- `docs/DICCIONARIO_DE_DATOS.md` — §4 Generador de logs (sintético), §4.0 principios.
-- `docs/PREGUNTAS_DE_NEGOCIO.md` — uso de logs en preguntas de movilidad y huella.
+- `docs/DICCIONARIO_DE_DATOS.md` — §4 Generador de logs (sintético), §4.0 principios; **§7** `geo_cloud_to_country_and_zones.csv`; **§8** `aws_ec2_on_demand_usd_per_hour.csv`.
+- `docs/PREGUNTAS_DE_NEGOCIO.md` — uso de logs, mapeo geográfico y precios EC2 en preguntas de coste / huella.
 - `scripts/generate_synthetic_usage_logs.py` — implementación fuente de verdad del comportamiento descrito.
-- `scripts/upload_bronze_to_s3.py` — carga de CSV al bucket Bronze en S3.
+- `scripts/build_aws_ec2_pricing_reference.py` — generación del catálogo de precios EC2 en `bronze/reference/`.
+- `scripts/ingest_electricity_maps.py` — ingesta Bronze desde la API Electricity Maps hacia `electricity_maps/` en S3.
+- `scripts/upload_bronze_to_s3.py` — carga de CSV al bucket Bronze en S3 (incluye ambos archivos bajo `reference/`).

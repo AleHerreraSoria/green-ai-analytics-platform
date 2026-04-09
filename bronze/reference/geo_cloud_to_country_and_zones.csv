@@ -1,23 +1,23 @@
 cloud_provider,cloud_region,region_name_mlco2,country_name_mlco2,country_name_global_petrol,iso_alpha2,iso_alpha3,electricity_maps_zone,is_primary_zone,mapping_notes
 aws,us-east-2,US East (Ohio),USA,USA,US,USA,US-MIDW-MISO,true,"Ohio/Midwest (MISO). US-PJM possible at eastern edge; refine with EM catalog if needed."
-aws,us-east-1,US East (N. Virginia),USA,USA,US,USA,US-PJM,true,"Northern Virginia datacenters typically PJM. Alternate EM id US-MIDA-PJM in some extracts."
+aws,us-east-1,US East (N. Virginia),USA,USA,US,USA,US-MIDA-PJM,true,"Northern Virginia datacenters typically PJM. v4 key validated: US-MIDA-PJM."
 aws,us-west-1,US West (N. California),USA,USA,US,USA,US-CAL-CISO,true,"Northern California / CAISO proxy for N. California region."
 aws,us-west-2,US West (Oregon),USA,USA,US,USA,US-NW-PGE,true,"Portland (Oregon) proxy. Alternates: US-BPA US-NW-PACW depending on operator."
 aws,ap-east-1,Asia Pacific (Hong Kong),China,Hong Kong,HK,HKG,HK,true,"MLCO2 country=China; Hong Kong SAR. Use HK for ISO/API and Global Petrol row Hong Kong."
-aws,ap-south-1,Asia Pacific (Mumbai),India,India,IN,IND,,true,"No Maharashtra zone in local MLCO2 yearly extract; set electricity_maps_zone from Electricity Maps API catalog (e.g. state-level IN-*)."
+aws,ap-south-1,Asia Pacific (Mumbai),India,India,IN,IND,IN-WE,true,"Resolved via /v4/zone dataCenter lookup: aws + ap-south-1 -> IN-WE (Western India)."
 aws,ap-northeast-3,Asia Pacific (Osaka-Local),Japan,Japan,JP,JPN,JP-KN,true,"Kansai grid as proxy for Osaka."
 aws,ap-northeast-2,Asia Pacific (Seoul),South Korea,South Korea,KR,KOR,KR,true,"Country-level zone key as commonly exposed by Electricity Maps; confirm against live /zones."
 aws,ap-southeast-1,Asia Pacific (Singapore),Singapore,Singapore,SG,SGP,SG,true,
 aws,ap-southeast-2,Asia Pacific (Sydney),Australia,Australia,AU,AUS,AUS-NSW,true,"New South Wales / Sydney."
 aws,ap-northeast-1,Asia Pacific (Tokyo),Japan,Japan,JP,JPN,JP-TK,true,"Tokyo area."
 aws,ca-central-1,Canada (Central),Canada,Canada,CA,CAN,CA-QC,true,"Montreal / Quebec (Hydro-Québec). CA-QC standard in EM; not all historical MLCO2 extracts list it."
-aws,cn-north-1,China (Beijing),China,China,CN,CHN,,true,"Mainland China; granular EM zone ids vary; populate from API catalog."
-aws,cn-northwest-1,China (Ningxia),China,China,CN,CHN,,true,"Mainland China; same as cn-north-1 for cross-dataset joins."
+aws,cn-north-1,China (Beijing),China,China,CN,CHN,CN,true,"/v4/zone with Beijing coordinates returns CN (country-level); datacenter lookup aws-cn-north-1 not available."
+aws,cn-northwest-1,China (Ningxia),China,China,CN,CHN,CN,true,"/v4/zone with Ningxia coordinates returns CN (country-level); datacenter lookup aws-cn-northwest-1 not available."
 aws,eu-central-1,EU (Frankfurt),Germany,Germany,DE,DEU,DE,true,"Germany country-level zone."
 aws,eu-west-1,EU (Ireland),Ireland,Ireland,IE,IRL,IE,true,
 aws,eu-west-2,EU (London),United Kingdom,UK,GB,GBR,GB,true,"OWID/BM use GBR (alpha-3); EM commonly GB (alpha-2). Global Petrol uses UK."
 aws,eu-west-3,EU (Paris),France,France,FR,FRA,FR,true,
 aws,eu-north-1,EU (Stockholm),Sweden,Sweden,SE,SWE,SE,true,
 aws,sa-east-1,South America (São Paulo),Brazil,Brazil,BR,BRA,BR-S,true,"Southern Brazil proxy for São Paulo; consider BR-CS per business rules."
-aws,us-gov-east-1,AWS GovCloud (US-East),USA,USA,US,USA,US-PJM,true,"MLCO2 lists city Dublin (likely error); modeled as US East for joins. Validate for Gov workloads."
+aws,us-gov-east-1,AWS GovCloud (US-East),USA,USA,US,USA,US-MIDA-PJM,true,"MLCO2 lists city Dublin (likely error); modeled as US East for joins. v4 key validated: US-MIDA-PJM."
 aws,us-gov-west-1,AWS GovCloud (US),USA,USA,US,USA,US-NW-SCL,true,"Seattle area proxy (Seattle City Light). Alternates: US-NW-PSEI."
