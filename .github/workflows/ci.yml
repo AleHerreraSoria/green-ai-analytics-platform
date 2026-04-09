@@ -1,0 +1,26 @@
+name: CI - Linter Check
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  flake8-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Instalar Flake8
+        run: |
+          pip install flake8
+
+      - name: Ejecutar análisis de código
+        run: |
+          flake8 .
