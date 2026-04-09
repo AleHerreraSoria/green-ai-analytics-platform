@@ -32,6 +32,14 @@ def _repo_root() -> Path:
 
 # (ruta relativa a la raíz del repo, clave S3 sin nombre de bucket)
 DEFAULT_UPLOADS: list[tuple[str, str]] = [
+    (
+        "bronze/reference/geo_cloud_to_country_and_zones.csv",
+        "reference/geo_cloud_to_country_and_zones.csv",
+    ),
+    (
+        "bronze/reference/aws_ec2_on_demand_usd_per_hour.csv",
+        "reference/aws_ec2_on_demand_usd_per_hour.csv",
+    ),
     ("bronze/usage_logs/usage_logs.csv", "usage_logs/usage_logs.csv"),
     ("data/Code_Carbon/gpus.csv", "mlco2/gpus.csv"),
     ("data/Code_Carbon/instances.csv", "mlco2/instances.csv"),
@@ -70,7 +78,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--only",
-        choices=("usage_logs", "mlco2", "owid", "global_petrol_prices", "world_bank"),
+        choices=("reference", "usage_logs", "mlco2", "owid", "global_petrol_prices", "world_bank"),
         default=None,
         help="Solo subir un prefijo/dataset.",
     )

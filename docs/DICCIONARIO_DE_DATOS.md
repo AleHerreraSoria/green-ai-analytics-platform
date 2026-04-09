@@ -1,6 +1,6 @@
 # Diccionario de datos del repositorio
 
-Este documento describe el **stack de información** del proyecto: contexto histórico y económico (Our World in Data), intensidad de carbono en tiempo real (Electricity Maps), tablas maestras de hardware e impacto regional (MLCO2), **precios medios de electricidad por país**, **exportaciones de servicios TIC** (Banco Mundial / WDI), y sesiones de uso de IA generadas de forma sintética. Las rutas de archivo indican copias locales en el repositorio cuando aplica.
+Este documento describe el **stack de información** del proyecto: contexto histórico y económico (Our World in Data), intensidad de carbono en tiempo real (Electricity Maps), tablas maestras de hardware e impacto regional (MLCO2), **precios medios de electricidad por país**, **precio horario On-Demand de instancias EC2 (proxy TCO cómputo)**, **exportaciones de servicios TIC** (Banco Mundial / WDI), y sesiones de uso de IA generadas de forma sintética. Las rutas de archivo indican copias locales en el repositorio cuando aplica.
 
 ## Fuentes de datos (el stack de información)
 
@@ -12,6 +12,8 @@ Este documento describe el **stack de información** del proyecto: contexto hist
 | 4 | **Generador de logs (sintético)** | Registros de sesiones de uso de IA (usuario, GPU, región, horas, etc.). | Desarrollo propio | Control de volumen (p. ej. 100k+ filas) y simulación de movilidad entre regiones de cómputo. |
 | 5 | **Precios de electricidad por país** | Tarifas medias residenciales y de negocio en USD/kWh (promedio 2023-2026) por país. | [GlobalPetrolPrices.com — Electricity prices](https://www.globalpetrolprices.com/electricity_prices/); copia local: `Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` | Complementa el contexto energético con el **costo** de la electricidad a nivel país (distinto de intensidad de carbono o mix). |
 | 6 | **Banco Mundial — WDI** | Exportaciones de servicios de tecnologías de la información y comunicación (TIC), balanza de pagos, US$ corrientes. | [Indicador BX.GSR.CCIS.CD](https://data.worldbank.org/indicator/BX.GSR.CCIS.CD); archivos en `World_Bank_Group/` | Contexto macroeconómico del sector digital/TIC por economía y en el tiempo (series anuales). |
+| 7 | **Dimensión geográfica de referencia** | Mapeo explícito región cloud AWS (y metadatos MLCO2) ↔ país ↔ ISO ↔ zona Electricity Maps ↔ nombre país para precios. | `bronze/reference/geo_cloud_to_country_and_zones.csv` (también `reference/` en bucket Bronze) | Evita joins frágiles entre logs (`region`), API EM (`zone`), OWID/BM (`iso_code` / `Country Code`) y Global Petrol (`Country`). |
+| 8 | **Precios EC2 On-Demand (proxy TCO)** | Tarifa horaria USD por tipo de instancia y región AWS (Linux, tenancy compartida), además del modelo eléctrico kWh × USD/kWh. | `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv`; regenerar con `scripts/build_aws_ec2_pricing_reference.py` | Permite estimar **coste de cómputo** ≈ `duration_hours × price_usd_per_hour` en Gold; no sustituye facturación real (Spot, RI, EBS, egress). |
 
 ---
 ## 1. Our World in Data (Energy)
@@ -434,3 +436,68 @@ Los nombres de columna son largos; en pipelines (p. ej. Spark o pandas) suele re
 | `TableName` | texto | Nombre corto de la economía para tablas. |
 
 Sirve para enriquecer la serie principal con **región**, **grupo de ingreso** y **notas** al hacer joins por `Country Code`.
+
+---
+
+## 7. Dimensión geográfica de referencia (mapeo)
+
+Archivo mantenido por el equipo: **`bronze/reference/geo_cloud_to_country_and_zones.csv`**. Una fila por región **AWS** presente en `MLCO2/impact.csv` (mismo universo que el generador de logs sintéticos cuando filtra por `provider=aws`). Sirve como **tabla puente** en Bronze para Silver/Gold.
+
+### 7.1 `bronze/reference/geo_cloud_to_country_and_zones.csv`
+
+| Metadato | Valor |
+|----------|-------|
+| Registros | 22 (una por región AWS en `impact.csv` al momento de creación) |
+| Formato | CSV, separador coma, cabecera en línea 1 |
+| Codificación | UTF-8 |
+
+### Descripción de columnas
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `cloud_provider` | texto | Proveedor (`aws` en esta versión). |
+| `cloud_region` | texto | Código de región cloud (p. ej. `us-east-1`); join con `usage_logs.region` y `impact.csv` (`region` con `provider=aws`). |
+| `region_name_mlco2` | texto | Nombre legible MLCO2 (`regionName` en `impact.csv`). |
+| `country_name_mlco2` | texto | País tal como figura en `impact.csv` (trazabilidad con la fuente). |
+| `country_name_global_petrol` | texto | Nombre de país alineado a la columna `Country` de `Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` cuando difiere (p. ej. `United Kingdom` → `UK`). |
+| `iso_alpha2` | texto | ISO 3166-1 alpha-2 (p. ej. `GB`, `US`). |
+| `iso_alpha3` | texto | ISO 3166-1 alpha-3 (p. ej. `GBR`, `USA`); alinear con OWID `iso_code` y Banco Mundial `Country Code` donde el código sea de país. |
+| `electricity_maps_zone` | texto | Identificador de zona compatible con Electricity Maps / extractos MLCO2 `zone_key` (p. ej. `US-PJM`, `JP-TK`). Puede ir **vacío** si la zona debe resolverse solo desde el catálogo en vivo de la API. |
+| `is_primary_zone` | booleano (`true`/`false`) | En esta versión siempre `true` (una fila por región). Reservado para filas adicionales mismo `cloud_region` con varias zonas EM. |
+| `mapping_notes` | texto | Supuestos, alternativas y advertencias (p. ej. zonas US aproximadas, GovCloud, India sin zona local en extracto anual). |
+
+**Uso en pipelines:** en Silver, unir logs por `(cloud_provider, cloud_region)`; precios por `country_name_global_petrol` o por `iso_alpha3`; intensidad EM por `electricity_maps_zone` cuando no esté vacío. OWID suele requerir `iso_alpha3` + `year`.
+
+---
+
+## 8. Precios EC2 On-Demand — proxy de TCO de cómputo
+
+Catálogo **Bronze** generado o actualizado con **`scripts/build_aws_ec2_pricing_reference.py`**: cruza cada región AWS del archivo geográfico §7 con cada `instance_type` AWS de `MLCO2/instances.csv`. Los valores base en **US East (N. Virginia)** provienen de referencia pública ([instances.vantage.sh](https://instances.vantage.sh), consulta abril 2026); el precio por región es `precio_base × multiplicador_regional` (multiplicadores aproximados documentados en el script).
+
+### 8.1 `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv`
+
+| Metadato | Valor |
+|----------|-------|
+| Registros | 308 (22 regiones × 14 tipos instancia MLCO2 AWS) |
+| Formato | CSV, separador coma, cabecera en línea 1 |
+| Codificación | UTF-8 |
+
+### Descripción de columnas
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `cloud_provider` | texto | `aws`. |
+| `cloud_region` | texto | Región (p. ej. `eu-west-1`); join con `usage_logs.region` y §7. |
+| `instance_type` | texto | Tipo EC2 (p. ej. `p3.2xlarge`); join con `usage_logs.instance_type` y `instances.csv`. |
+| `operating_system` | texto | `linux` (precios list orientados a cargas ML típicas). |
+| `tenancy` | texto | `shared`. |
+| `pricing_model` | texto | `on_demand`. |
+| `currency` | texto | `USD`. |
+| `price_usd_per_hour` | numérico | Tarifa horaria estimada en la región. |
+| `price_basis_region` | texto | Región de referencia del precio base (`us-east-1`). |
+| `regional_multiplier` | numérico | Factor aplicado respecto a `price_basis_region`. |
+| `as_of_date` | texto | Fecha del snapshot (`YYYY-MM-DD`). |
+| `source` | texto | Procedencia resumida (Vantage + script). |
+| `pricing_notes` | texto | Límites del modelo (sin EBS, egress, Spot, RI, etc.). |
+
+**Uso en pipelines:** en Silver/Gold, join logs con `(cloud_provider, cloud_region, instance_type)` y opcionalmente filtrar por `pricing_model`. **Coste cómputo (proxy):** `duration_hours * price_usd_per_hour` para sesiones exitosas o análisis acordado. Complementa el **coste eléctrico** de la pregunta de negocio 2 (TDP/kWh × tarifa eléctrica), no lo reemplaza.

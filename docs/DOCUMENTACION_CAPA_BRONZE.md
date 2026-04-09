@@ -138,6 +138,7 @@ s3://green-ai-pf-bronze-a0e96d06/
 ├── global_petrol_prices/
 ├── mlco2/
 ├── owid/
+├── reference/                 # catálogos de referencia (mapeo geográfico, etc.)
 ├── usage_logs/
 └── world_bank/
 ```
@@ -147,6 +148,8 @@ s3://green-ai-pf-bronze-a0e96d06/
 | Carpeta (prefijo) | Documento(s) en el bucket | Origen en el repositorio |
 |-------------------|---------------------------|---------------------------|
 | `electricity_maps/` | *Ninguno aún* (reservado para JSON/CSV de la API Electricity Maps). | — |
+| `reference/` | `geo_cloud_to_country_and_zones.csv` | `bronze/reference/geo_cloud_to_country_and_zones.csv` |
+| `reference/` | `aws_ec2_on_demand_usd_per_hour.csv` | `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv` (regenerar: `python scripts/build_aws_ec2_pricing_reference.py`) |
 | `global_petrol_prices/` | `electricity_prices_by_country_2023_2026_avg.csv` | `data/Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` |
 | `mlco2/` | `gpus.csv` | `data/Code_Carbon/gpus.csv` |
 | `mlco2/` | `instances.csv` | `data/Code_Carbon/instances.csv` |
