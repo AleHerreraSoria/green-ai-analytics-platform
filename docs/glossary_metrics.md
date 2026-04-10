@@ -1,68 +1,71 @@
+
 # Data Standardization & Glossary: Green AI Platform
 
 **Proyecto:** Green AI Analytics Platform (GAIA)
-**Ticket:** SRUM-40 (Revisión Integrada v2)
+**Ticket:** SRUM-40 (Revisión Final Integrada)
 **Responsable:** Alejandro N. Herrera Soria (Data Engineer)
 
 ---
 
-## 1. Glosario de Términos Técnicos e Identificadores
+## 1. Glosario de Términos Técnicos
 
-Para garantizar la integridad referencial entre los scripts de ingesta y las capas de S3, se definen los siguientes conceptos:
-
-| Término                             | Definición Técnica                                                                            | Mapeo en Repositorio / Código                           |
-| :----------------------------------- | :---------------------------------------------------------------------------------------------- | :------------------------------------------------------- |
-| **Intensidad de Carbono**      | Emisiones de$CO_2$ equivalente por unidad de electricidad ($gCO_2eq/kWh$).                  | Campo `carbonIntensity` en los JSON de la API.         |
-| **Mix Energético**            | Desglose porcentual de fuentes de generación (Solar, Eólica, Fósil, etc.).                   | Objeto `powerProductionBreakdown` en la capa Bronze.   |
-| **TDP (Thermal Design Power)** | Potencia máxima que el sistema de enfriamiento del hardware debe disipar.                      | Columna `tdp_watts` en el dataset de hardware.         |
-| **Zone ID / Region**           | Identificador geográfico único para nodos de red o regiones de AWS.                           | Variable `ZONE_ID` utilizada en los scripts de Python. |
-| **Bucket Suffix**              | Identificador aleatorio único para evitar colisiones de nombres en S3.                         | Generado por el recurso `random_id` en Terraform.      |
-| **Idempotencia**               | Propiedad de un pipeline de producir el mismo resultado sin importar cuántas veces se ejecute. | Implementado mediante sobreescritura controlada en S3.   |
+| Término                             | Definición Técnica                                                           | Relevancia en el Proyecto                                     |
+| :----------------------------------- | :----------------------------------------------------------------------------- | :------------------------------------------------------------ |
+| **Intensidad de Carbono**      | Emisiones de$CO_2$ equivalente por unidad de electricidad ($gCO_2eq/kWh$). | Métrica core de la API Electricity Maps.                     |
+| **Mix Energético**            | Proporción de fuentes (Solar, Eólica, Fósil) en la red.                     | Determina la calidad ambiental de la región.                 |
+| **TDP (Thermal Design Power)** | Máxima potencia que el hardware debe disipar.                                 | Proxy para el consumo energético del servidor.               |
+| **Idempotencia**               | Propiedad de un proceso de dar el mismo resultado tras múltiples ejecuciones. | Vital para evitar duplicados en S3 durante fallos de Airflow. |
 
 ---
 
-## 2. Unidades de Medida Estandarizadas
+## 2. El Factor PUE (Power Usage Effectiveness)
 
-Para evitar errores de cálculo en las transformaciones de la capa Silver a Gold, todo dato debe normalizarse a:
+**¿Qué es?** Es la métrica que mide la eficiencia energética de un Centro de Datos. Indica cuánta energía se desperdicia en enfriamiento y mantenimiento vs. cuánta llega realmente al hardware.
 
-### A. Métricas de Carbono y Medio Ambiente
+$$
+PUE = \frac{\text{Energía Total del Data Center}}{\text{Energía consumida por el Servidor}}
+$$
+
+### Implementación en GAIA:
+
+* **Origen de la métrica:** Es una **constante de investigación** obtenida de los reportes de sostenibilidad de los proveedores de nube.
+* **Valor Estándar:** Usaremos **1.2** para nuestra infraestructura en **AWS**, y **1.8** como valor de referencia para "Servidores Propios/Tradicionales".
+* **Uso en el Proyecto:** Se aplicará como un **factor multiplicador** en la capa Gold. Sin el PUE, estaríamos subestimando la huella de carbono real de la ONG en un 20-40%.
+
+---
+
+## 3. Unidades de Medida Estandarizadas
+
+Todo script de procesamiento debe normalizar los datos a estas unidades:
+
+### A. Carbono y Medio Ambiente
 
 * **Unidad Base:** $gCO_2eq/kWh$.
-* **Normalización:** Cualquier dato recibido en $kg$ o $ton$ debe ser convertido a gramos en la capa Silver para mantener precisión decimal en cálculos de micro-servicios.
-* **Frecuencia:** Los datos de la API se consideran "Instantáneos" (Real-time).
+* **Regla de Oro:** Los cálculos internos siempre se hacen en **gramos** para mantener la precisión decimal. La conversión a toneladas es exclusiva para el dashboard.
 
-### B. Métricas Eléctricas y de Cómputo
+### B. Electricidad y Hardware
 
-* **Consumo de Energía:** $kWh$ (Kilovatios-hora).
-* **Potencia Nominal:** $W$ (Vatios). *Nota: Conversión obligatoria para cálculos de costo: $(W \times horas) / 1000$.*
-* **Capacidad de Cómputo:** $TFLOPS$ (Teraflops). Utilizado para medir la "Potencia de Fuego" de la instancia `m7i-flex`.
+* **Consumo:** $kWh$ (Kilovatios-hora).
+* **Potencia:** $W$ (Vatios). *Conversión: $(W \times horas) / 1000$.*
+* **Rendimiento:** $TFLOPS$ (Teraflops).
 
-### C. Métricas Financieras y de Infraestructura
+### C. Finanzas e Infraestructura
 
-* **Divisa:** $USD$ (Dólares estadounidenses).
-* **Almacenamiento:** $GB$ (Gigabytes). Unidad base para monitoreo de costos en S3.
-
----
-
-## 3. Diccionario de Referencia de Datasets (Lineage)
-
-Alineación técnica según los archivos presentes en el repositorio:
-
-1. **Dataset Ingesta API (v-Ingesta):** Provee la intensidad de carbono actual y la señal de "Emisiones Marginales".
-2. **Dataset OWID:** Provee el contexto histórico anual para comparativas de tendencia.
-3. **Dataset Hardware Specs:** Provee los coeficientes de eficiencia para el cálculo de impacto según el dispositivo de cómputo seleccionado.
+* **Moneda:** $USD$ (Dólares).
+* **Almacenamiento:** $GB$ (Gigabytes).
 
 ---
 
-## 4. Fórmulas de Validación de Datos (Data Quality)
+## 4. Protocolo de Cálculo (Capa Gold)
 
-Estas fórmulas deben ser implementadas en los tests de calidad de datos:
+Para asegurar que todos reportemos los mismos números, la fórmula oficial del proyecto es:
 
-* **Emisiones Totales:** $E = [Consumo(kWh) \times Intensidad(gCO_2eq/kWh)] \times PUE$
-* **Eficiencia Relativa:** $Ef = \frac{TFLOPS}{Consumo(W)}$
+$$
+Emisiones\_Totales = [Consumo\_Hardware(kWh) \times PUE] \times Intensidad\_Carbono(gCO_2eq/kWh)
+$$
 
 ---
 
-*Este documento ha sido contrastado con la rama dev y los despliegues de infraestructura realizados hasta la fecha (Abril 2026).*
+*Este glosario unifica el lenguaje técnico entre Infraestructura, Ingeniería de Datos y Negocio.*
 
 *Documento generado para el Proyecto Final DEPT02 - Henry 2026.*
