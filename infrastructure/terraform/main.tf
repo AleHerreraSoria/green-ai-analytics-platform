@@ -69,7 +69,6 @@ resource "aws_instance" "platform_server" {
 resource "aws_eip" "platform_eip" {
   instance = aws_instance.platform_server.id
   domain   = "vpc"
-  tags = { Name = "GreenAI-Static-IP" }
 }
 
 # --- OUTPUTS ---
