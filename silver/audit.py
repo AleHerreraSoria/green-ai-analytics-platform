@@ -59,8 +59,12 @@ from pyspark.sql.types import (
 
 BRONZE_BUCKET = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
 SILVER_BUCKET = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
-BRONZE = f"s3://{BRONZE_BUCKET}"
-SILVER = f"s3://{SILVER_BUCKET}"
+BRONZE = f"s3a://{BRONZE_BUCKET}"
+SILVER = f"s3a://{SILVER_BUCKET}"
+
+# Umbral máximo de pérdida de registros Bronze → Silver aceptable (5%).
+# Pérdidas mayores activan el estado WARN_HIGH_LOSS en AuditEntry.status.
+MAX_LOSS_PCT = 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +108,7 @@ def _count_csv(spark, path: str, skip_rows: int = 0) -> int:
     try:
         if skip_rows > 0:
             import boto3, io, pandas as pd
-            bucket, key = path.replace("s3://", "").split("/", 1)
+            bucket, key = path.replace("s3a://", "").replace("s3://", "").split("/", 1)
             s3 = boto3.client("s3")
             body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
             pdf = pd.read_csv(io.BytesIO(body), skiprows=skip_rows, dtype=str)
@@ -129,7 +133,7 @@ def _count_json_recursive(spark, path: str, explode_col: str = None) -> int:
 
 def _count_silver(spark, path: str) -> int:
     try:
-        return spark.read.parquet(path).count()
+        return spark.read.format("delta").load(path).count()
     except Exception as e:
         print(f"    ⚠️  No se pudo contar Silver {path}: {e}")
         return -1
@@ -165,6 +169,10 @@ def run_audit(spark: SparkSession) -> list[AuditEntry]:
             lambda: _count_csv(spark, f"{BRONZE}/reference/aws_ec2_on_demand_usd_per_hour.csv"),
             f"{SILVER}/reference/ec2_pricing",
         ),
+        "reference/geo_cloud_mapping": (
+            lambda: _count_csv(spark, f"{BRONZE}/reference/geo_cloud_to_country_and_zones.csv"),
+            f"{SILVER}/reference/geo_cloud_mapping",
+        ),
         # World Bank: 4 filas son metadatos → skip.
         # ⚠️  NOTA DE DISEÑO: Bronze count ≈ 266 filas (1 por país en formato ancho).
         # Silver count ≈ 266 × ~66 años = ~17,500 filas (formato largo tras melt).
@@ -174,6 +182,10 @@ def run_audit(spark: SparkSession) -> list[AuditEntry]:
                                f"{BRONZE}/world_bank/API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv",
                                skip_rows=4),
             f"{SILVER}/world_bank/ict_exports",
+        ),
+        "reference/world_bank_metadata": (
+            lambda: _count_csv(spark, f"{BRONZE}/world_bank/Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv"),
+            f"{SILVER}/reference/world_bank_metadata",
         ),
         # Electricity Maps JSON planos
         "electricity_maps/carbon_intensity/latest": (
@@ -258,8 +270,14 @@ def persist_audit_log(spark: SparkSession, entries: list[AuditEntry]):
     df_log = spark.createDataFrame(rows, schema=AUDIT_LOG_SCHEMA)
     df_log = df_log.withColumn("run_date", F.to_date("run_timestamp"))
 
+    run_date_str = df_log.select("run_date").first()[0].strftime("%Y-%m-%d")
+
     log_path = f"{SILVER}/audit/audit_log"
-    df_log.write.mode("append").partitionBy("run_date").parquet(log_path)
+    (df_log.write
+        .mode("overwrite")
+        .format("delta")
+        .option("replaceWhere", f"run_date = '{run_date_str}'")
+        .save(log_path))
     print(f"\n[audit] Log persistido en: {log_path}")
 
 
@@ -272,6 +290,26 @@ def main():
         SparkSession.builder
         .appName("green-ai-audit-bronze-silver")
         .config("spark.sql.session.timeZone", "UTC")
+        # ── Conectividad S3 (s3a://) ─────────────────────────────────────────
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.jars.packages",
+                "io.delta:delta-spark_2.12:3.2.0,"
+                "org.apache.hadoop:hadoop-aws:3.3.4,"
+                "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+                "software.amazon.awssdk:bundle:2.20.18")
+        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY"))
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.EnvironmentVariableCredentialsProvider")
+        # Fix for Hadoop 3.3.4 "60s" NumberFormatException bug
+        .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.threads.keepalivetime", "60")
+        .config("spark.hadoop.fs.s3a.multipart.purge", "false")
+        .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.hadoop.fs.s3a.fast.upload", "true")
+        .config("spark.driver.memory", "8g")
         .getOrCreate()
     )
 
