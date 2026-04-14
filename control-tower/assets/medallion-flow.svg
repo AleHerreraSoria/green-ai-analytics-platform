@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 200" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitectura Medallion - Bronze, Silver, Gold</title>
+  <desc id="desc">Flujo de datos de izquierda a derecha: ingesta hacia Bronze, calidad hacia Silver, anal&#237;tica hacia Gold.</desc>
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#deff9a;stop-opacity:0.15"/>
+      <stop offset="100%" style="stop-color:#deff9a;stop-opacity:0.45"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect width="920" height="200" fill="#111"/>
+  <rect x="24" y="24" width="872" height="152" rx="16" fill="url(#g)" opacity="0.35"/>
+  <g font-family="Segoe UI, system-ui, sans-serif" fill="#f2f2f2">
+    <g filter="url(#shadow)">
+      <rect x="48" y="56" width="220" height="88" rx="12" fill="#1c1c1c" stroke="#deff9a" stroke-width="2"/>
+      <rect x="348" y="56" width="220" height="88" rx="12" fill="#1c1c1c" stroke="#deff9a" stroke-width="2"/>
+      <rect x="648" y="56" width="220" height="88" rx="12" fill="#1c1c1c" stroke="#deff9a" stroke-width="2"/>
+    </g>
+    <text x="158" y="92" text-anchor="middle" font-size="18" font-weight="700" fill="#deff9a">Bronze</text>
+    <text x="158" y="118" text-anchor="middle" font-size="13" fill="#cfcfcf">Ingesta cruda &#183; trazabilidad</text>
+    <text x="458" y="92" text-anchor="middle" font-size="18" font-weight="700" fill="#deff9a">Silver</text>
+    <text x="458" y="118" text-anchor="middle" font-size="13" fill="#cfcfcf">Limpieza &#183; unidades &#183; calidad</text>
+    <text x="758" y="92" text-anchor="middle" font-size="18" font-weight="700" fill="#deff9a">Gold</text>
+    <text x="758" y="118" text-anchor="middle" font-size="13" fill="#cfcfcf">Kimball &#183; KPIs &#183; consumo</text>
+    <path d="M272 100 L336 100" stroke="#deff9a" stroke-width="3" stroke-linecap="round"/>
+    <polygon points="336,100 324,92 324,108" fill="#deff9a"/>
+    <path d="M572 100 L636 100" stroke="#deff9a" stroke-width="3" stroke-linecap="round"/>
+    <polygon points="636,100 624,92 624,108" fill="#deff9a"/>
+  </g>
+</svg>
