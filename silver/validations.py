@@ -44,8 +44,8 @@ from pyspark.sql import functions as F
 
 SILVER_BUCKET = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
 BRONZE_BUCKET = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
-SILVER = f"s3://{SILVER_BUCKET}"
-BRONZE = f"s3://{BRONZE_BUCKET}"
+SILVER = f"s3a://{SILVER_BUCKET}"
+BRONZE = f"s3a://{BRONZE_BUCKET}"
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +179,7 @@ def validate_usage_logs(spark: SparkSession, report: ValidationReport):
       - job_type en valores esperados
       - execution_status en valores esperados
     """
-    df = spark.read.parquet(f"{SILVER}/usage_logs")
+    df = spark.read.format("delta").load(f"{SILVER}/usage_logs")
     DATASET = "usage_logs"
 
     # CA principal
@@ -230,7 +230,7 @@ def validate_carbon_intensity(spark: SparkSession, report: ValidationReport):
     for endpoint in ("latest", "past", "history"):
         path = f"{SILVER}/electricity_maps/carbon_intensity/{endpoint}"
         try:
-            df = spark.read.parquet(path)
+            df = spark.read.format("delta").load(path)
         except Exception:
             report.add(CheckResult(
                 f"carbon_intensity/{endpoint}", "dataset_exists",
@@ -254,7 +254,7 @@ def validate_global_petrol_prices(spark: SparkSession, report: ValidationReport)
     Valida que el precio residencial sea positivo y que precio_red_estimado_usd
     esté correctamente calculado (no nulo si residential tampoco lo es).
     """
-    df = spark.read.parquet(f"{SILVER}/global_petrol_prices")
+    df = spark.read.format("delta").load(f"{SILVER}/global_petrol_prices")
     DATASET = "global_petrol_prices"
 
     _check_range(report, df, DATASET, "residential_usd_per_kwh",
@@ -276,7 +276,7 @@ def validate_global_petrol_prices(spark: SparkSession, report: ValidationReport)
 
 def validate_owid(spark: SparkSession, report: ValidationReport):
     """Valida OWID: año en rango, carbon_intensity_elec no negativo."""
-    df = spark.read.parquet(f"{SILVER}/owid")
+    df = spark.read.format("delta").load(f"{SILVER}/owid")
     DATASET = "owid"
 
     _check_range(report, df, DATASET, "year",
@@ -291,7 +291,7 @@ def validate_owid(spark: SparkSession, report: ValidationReport):
 
 def validate_world_bank(spark: SparkSession, report: ValidationReport):
     """Valida World Bank ICT: ict_exports_usd positivo, year en rango."""
-    df = spark.read.parquet(f"{SILVER}/world_bank/ict_exports")
+    df = spark.read.format("delta").load(f"{SILVER}/world_bank/ict_exports")
     DATASET = "world_bank_ict"
 
     _check_range(report, df, DATASET, "ict_exports_usd",
@@ -305,7 +305,7 @@ def validate_world_bank(spark: SparkSession, report: ValidationReport):
 
 def validate_ec2_pricing(spark: SparkSession, report: ValidationReport):
     """Valida precios EC2: price_usd_per_hour > 0."""
-    df = spark.read.parquet(f"{SILVER}/reference/ec2_pricing")
+    df = spark.read.format("delta").load(f"{SILVER}/reference/ec2_pricing")
     DATASET = "ec2_pricing"
 
     _check_range(report, df, DATASET, "price_usd_per_hour",
@@ -314,6 +314,35 @@ def validate_ec2_pricing(spark: SparkSession, report: ValidationReport):
     _check_null_rate(report, df, DATASET, "instance_type", max_null_pct=0.0)
     _check_null_rate(report, df, DATASET, "cloud_region",  max_null_pct=0.0)
 
+def validate_geo_cloud_mapping(spark: SparkSession, report: ValidationReport):
+    """Valida mapeos Cloud: claves primarias no nulas y unicidad."""
+    df = spark.read.format("delta").load(f"{SILVER}/reference/geo_cloud_mapping")
+    DATASET = "geo_cloud_mapping"
+
+    # Claves críticas no deben ser nulas
+    _check_null_rate(report, df, DATASET, "cloud_region", max_null_pct=0.0)
+    _check_null_rate(report, df, DATASET, "electricity_maps_zone", max_null_pct=0.0)
+    _check_null_rate(report, df, DATASET, "iso_alpha3", max_null_pct=0.0)
+
+    # Unicidad combinada (provider + region)
+    total = df.count()
+    distinct = df.select("cloud_provider", "cloud_region").distinct().count()
+    duplicates = total - distinct
+    report.add(CheckResult(
+        dataset=DATASET,
+        check_name="unique(cloud_provider, cloud_region)",
+        passed=duplicates == 0,
+        detail=f"{duplicates:,} combinaciones duplicadas de {total:,}",
+        failing_count=duplicates,
+    ))
+
+def validate_world_bank_metadata(spark: SparkSession, report: ValidationReport):
+    """Valida metadatos de World Bank: country_code no nulo y único."""
+    df = spark.read.format("delta").load(f"{SILVER}/reference/world_bank_metadata")
+    DATASET = "world_bank_metadata"
+
+    _check_null_rate(report, df, DATASET, "country_code", max_null_pct=0.0)
+    _check_uniqueness(report, df, DATASET, "country_code")
 
 # ---------------------------------------------------------------------------
 # Main
@@ -324,6 +353,26 @@ def main(fail_on_error: bool = False):
         SparkSession.builder
         .appName("green-ai-silver-validation")
         .config("spark.sql.session.timeZone", "UTC")
+        # ── Conectividad S3 (s3a://) ─────────────────────────────────────────
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.jars.packages",
+                "io.delta:delta-spark_2.12:3.2.0,"
+                "org.apache.hadoop:hadoop-aws:3.3.4,"
+                "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+                "software.amazon.awssdk:bundle:2.20.18")
+        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY"))
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.EnvironmentVariableCredentialsProvider")
+        # Fix for Hadoop 3.3.4 "60s" NumberFormatException bug
+        .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.threads.keepalivetime", "60")
+        .config("spark.hadoop.fs.s3a.multipart.purge", "false")
+        .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.hadoop.fs.s3a.fast.upload", "true")
+        .config("spark.driver.memory", "8g")
         .getOrCreate()
     )
 
@@ -336,6 +385,8 @@ def main(fail_on_error: bool = False):
         validate_owid,
         validate_world_bank,
         validate_ec2_pricing,
+        validate_geo_cloud_mapping,
+        validate_world_bank_metadata
     ]
 
     for fn in validators:
