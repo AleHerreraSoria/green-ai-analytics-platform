@@ -80,8 +80,8 @@ except ImportError:
 BRONZE_BUCKET = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
 SILVER_BUCKET = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
 
-BRONZE = f"s3://{BRONZE_BUCKET}"
-SILVER = f"s3://{SILVER_BUCKET}"
+BRONZE = f"s3a://{BRONZE_BUCKET}"
+SILVER = f"s3a://{SILVER_BUCKET}"
 
 # ---------------------------------------------------------------------------
 # SparkSession
@@ -101,6 +101,31 @@ def build_spark() -> SparkSession:
         # y aborta el Job completo. Con ANSI desactivado, el cast retorna
         # null silenciosamente y la fila se filtra en el paso siguiente.
         .config("spark.sql.ansi.enabled", "false")
+        # ── Conectividad S3 (s3a://) ─────────────────────────────────────────
+        # hadoop-aws descarga el conector S3A y aws-java-sdk-bundle provee
+        # el cliente AWS. Las credenciales se leen del entorno (cargado por
+        # dotenv / IAM Role) mediante EnvironmentVariableCredentialsProvider.
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.jars.packages",
+                "io.delta:delta-spark_2.12:3.2.0,"
+                "org.apache.hadoop:hadoop-aws:3.3.4,"
+                "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+                "software.amazon.awssdk:bundle:2.20.18")
+        # By-pass the credential provider chain, providing keys explicitly
+        # eliminates 4-minute EC2 metadata timeouts on AWS Local Run.
+        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY"))
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.EnvironmentVariableCredentialsProvider")
+        # Fix for Hadoop 3.3.4 "60s" NumberFormatException bug
+        .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.threads.keepalivetime", "60")
+        .config("spark.hadoop.fs.s3a.multipart.purge", "false")
+        .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.hadoop.fs.s3a.fast.upload", "true")
+        .config("spark.driver.memory", "8g")
         .getOrCreate()
     )
 
@@ -303,37 +328,38 @@ def process_electricity_mix(spark: SparkSession) -> tuple[DataFrame, int]:
 # ---------------------------------------------------------------------------
 
 def process_zones_catalog(spark: SparkSession) -> tuple[DataFrame, int]:
-    """
-    El JSON de zones es un mapa {zoneKey: {zoneName, countryName, countryCode}}.
-    Se carga con multiLine y se aplanar usando map_keys / explode.
-    """
     bronze_path = f"{BRONZE}/electricity_maps/zones/catalog"
-
-    # Leer como texto para manejar la estructura dinámica de claves
     df_raw = spark.read.option("multiLine", "true").json(bronze_path)
 
-    # Cada columna es una clave del mapa (zoneKey). Se transpone usando stack.
-    zone_keys = [c for c in df_raw.columns]
+    zone_keys = df_raw.columns
 
-    rows = []
-    for zk in zone_keys:
-        rows.append(
-            df_raw.select(
-                F.lit(zk).alias("zone_key"),
-                F.col(f"`{zk}`.zoneName").alias("zone_name"),
-                F.col(f"`{zk}`.countryName").alias("country_name"),
-                F.col(f"`{zk}`.countryCode").alias("country_code"),
+    struct_cols = [
+        F.struct(
+            F.lit(zk).alias("zone_key"),
+            F.col(f"`{zk}`.zoneName").alias("zone_name"),
+            F.col(f"`{zk}`.countryName").alias("country_name"),
+            F.col(f"`{zk}`.countryCode").alias("country_code"),
+        )
+        for zk in zone_keys
+    ]
+
+    if not struct_cols:
+        from schemas import ZONES_CATALOG_SCHEMA
+        df = spark.createDataFrame([], schema=ZONES_CATALOG_SCHEMA)
+    else:
+        df = (
+            df_raw
+            .withColumn("zones_array", F.array(*struct_cols))
+            .select(F.explode("zones_array").alias("zone_data"))
+            .select(
+                F.col("zone_data.zone_key"),
+                F.col("zone_data.zone_name"),
+                F.col("zone_data.country_name"),
+                F.col("zone_data.country_code"),
             )
         )
 
-    if not rows:
-        df = spark.createDataFrame([], schema=ZONES_CATALOG_SCHEMA)
-    else:
-        df = rows[0]
-        for r in rows[1:]:
-            df = df.union(r)
-
-    result: WriteResult = write_to_silver(df, "electricity_maps/zones/catalog")
+    result = write_to_silver(df, "electricity_maps/zones/catalog")
     return df, result.rows_written
 
 
@@ -493,7 +519,33 @@ def process_ec2_pricing(spark: SparkSession) -> tuple[DataFrame, int]:
 
 
 # ---------------------------------------------------------------------------
-# 9. Usage Logs (sintético)
+# 9. Geo Cloud Mapping (Tabla Puente Custom)
+# ---------------------------------------------------------------------------
+
+def process_geo_cloud_mapping(spark: SparkSession) -> tuple[DataFrame, int]:
+    bronze_path = f"{BRONZE}/reference/geo_cloud_to_country_and_zones.csv"
+
+    df_raw = (
+        spark.read
+        .option("header", "true")
+        .option("inferSchema", "true")
+        .csv(bronze_path)
+    )
+
+    # ── SELF-HEALING: Filtros de integridad ──────────────────────────────────
+    # Aseguramos que las llaves puente no vengan nulas.
+    df_clean = df_raw.filter(
+        F.col("cloud_provider").isNotNull() &
+        F.col("cloud_region").isNotNull() &
+        F.col("electricity_maps_zone").isNotNull()
+    )
+    df = _log_dropped(df_raw, df_clean, "reference/geo_cloud_mapping")
+
+    result: WriteResult = write_to_silver(df, "reference/geo_cloud_mapping")
+    return df, result.rows_written
+
+# ---------------------------------------------------------------------------
+# 10. Usage Logs (sintético)
 # ---------------------------------------------------------------------------
 
 def process_usage_logs(spark: SparkSession) -> tuple[DataFrame, int]:
@@ -534,7 +586,7 @@ def process_usage_logs(spark: SparkSession) -> tuple[DataFrame, int]:
 
 
 # ---------------------------------------------------------------------------
-# 10. World Bank — ICT Service Exports
+# 11. World Bank — ICT Service Exports
 # ---------------------------------------------------------------------------
 
 def process_world_bank(spark: SparkSession) -> tuple[DataFrame, int]:
@@ -590,6 +642,39 @@ def process_world_bank(spark: SparkSession) -> tuple[DataFrame, int]:
     result: WriteResult = write_to_silver(df, "world_bank/ict_exports")
     return df, result.rows_written
 
+# ---------------------------------------------------------------------------
+# 12. World Bank Metadata (Tabla de Dimensión)
+# ---------------------------------------------------------------------------
+
+def process_world_bank_metadata(spark: SparkSession) -> tuple[DataFrame, int]:
+    bronze_path = f"{BRONZE}/world_bank/Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv"
+
+    # Este CSV no tiene filas basura al inicio, se lee normal.
+    df_raw = (
+        spark.read
+        .option("header", "true")
+        .option("inferSchema", "false")
+        .csv(bronze_path)
+    )
+
+    # Renombrar a snake_case y quitar columna vacía del final ("Unnamed: 5")
+    df_renamed = (
+        df_raw
+        .withColumnRenamed("Country Code", "country_code")
+        .withColumnRenamed("Region", "region")
+        .withColumnRenamed("IncomeGroup", "income_group")
+        .withColumnRenamed("SpecialNotes", "special_notes")
+        .withColumnRenamed("TableName", "table_name")
+    )
+    if "Unnamed: 5" in df_renamed.columns:
+        df_renamed = df_renamed.drop("Unnamed: 5")
+
+    # ── SELF-HEALING: country_code no puede ser nulo
+    df_clean = df_renamed.filter(F.col("country_code").isNotNull())
+    df = _log_dropped(df_renamed, df_clean, "reference/world_bank_metadata")
+
+    result: WriteResult = write_to_silver(df, "reference/world_bank_metadata")
+    return df, result.rows_written
 
 # ===========================================================================
 # MAIN
@@ -613,8 +698,10 @@ def main():
         ("mlco2/yearly_averages",                     lambda: process_mlco2_yearly_avg(spark)),
         ("owid",                                      lambda: process_owid(spark)),
         ("reference/ec2_pricing",                     lambda: process_ec2_pricing(spark)),
+        ("reference/geo_cloud_mapping",               lambda: process_geo_cloud_mapping(spark)),
         ("usage_logs",                                lambda: process_usage_logs(spark)),
         ("world_bank/ict_exports",                    lambda: process_world_bank(spark)),
+        ("reference/world_bank_metadata",             lambda: process_world_bank_metadata(spark)),
     ]
 
     for name, fn in steps:
