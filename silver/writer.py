@@ -34,6 +34,7 @@ logger = logging.getLogger("green-ai.writer")
 # Determina las columnas de partición Hive para cada dataset Silver.
 # Se define como constante para que sea auditable y documentable.
 
+""" Test
 PARTITION_STRATEGIES: dict[str, list[str]] = {
     # Electricity Maps: zona eléctrica + ventana temporal
     "electricity_maps/carbon_intensity/latest":  ["zone", "year", "month"],
@@ -53,6 +54,30 @@ PARTITION_STRATEGIES: dict[str, list[str]] = {
 
     # Logs: año + mes + región (alta cardinalidad → 3 niveles)
     "usage_logs":            ["year", "month", "region"],
+}
+"""
+
+PARTITION_STRATEGIES: dict[str, list[str]] = {
+    # 1. Electricity Maps (Streaming / Alto Volumen)
+    "electricity_maps/carbon_intensity/latest":  ["year", "month"],
+    "electricity_maps/carbon_intensity/past":    ["year", "month"],
+    "electricity_maps/carbon_intensity/history": ["year", "month"],
+    "electricity_maps/electricity_mix/latest":   ["year", "month"],
+    
+    # Catálogos estáticos: Nunca se particionan. Son diminutos (KBs/MBs).
+    "electricity_maps/zones/catalog":  [],
+    "global_petrol_prices":  [],
+    "reference/ec2_pricing": [],
+    "reference/geo_cloud_mapping": [],
+    "mlco2/yearly_averages": [],
+    "reference/world_bank_metadata": [],
+
+    # 2. Macrodatos históricos (Bajo Volumen)
+    "owid":                  [],
+    "world_bank/ict_exports": [],
+
+    # 3. Logs de uso (Volumen Medio/Alto)
+    "usage_logs":            ["year", "month"],
 }
 
 
@@ -100,7 +125,7 @@ class SilverWriter:
         self.mode = mode
 
     def _build_path(self, dataset_key: str) -> str:
-        return f"s3://{self.silver_bucket}/{dataset_key}"
+        return f"s3a://{self.silver_bucket}/{dataset_key}"
 
     def write(self, df: DataFrame, dataset_key: str) -> WriteResult:
         """
@@ -141,10 +166,17 @@ class SilverWriter:
             )
 
         try:
+            if partition_by:
+                # ── SELF-HEALING (Memoria local PySpark → S3) ──────────────
+                # Repartition colapsa los datos en memoria por llave de partición
+                # antes de escribir. Evita que el worker local crashee (OOM / EOFException)
+                # al intentar abrir cientos de conexiones S3A y archivos simultáneamente.
+                df = df.repartition(1, *partition_by)
+
             writer = (
                 df.write
                 .mode(self.mode)
-                .format("parquet")
+                .format("delta")
                 .option("compression", "snappy")
             )
 

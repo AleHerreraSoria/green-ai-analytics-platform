@@ -238,3 +238,32 @@ WORLD_BANK_ICT_SCHEMA = StructType([
     StructField("indicator_code",  StringType(),  nullable=True),
     # Las columnas de año son dinámicas; se leen como string y se despivota.
 ])
+
+# =============================================================================
+# 11. GEO CLOUD MAPPING (Tabla Puente Custom)
+# =============================================================================
+# Mapea regiones Cloud (ej. aws-us-east-1) a zonas de Electricity Maps e ISO codes.
+
+GEO_CLOUD_MAPPING_SCHEMA = StructType([
+    StructField("cloud_provider",             StringType(),  nullable=False),
+    StructField("cloud_region",               StringType(),  nullable=False),
+    StructField("region_name_mlco2",          StringType(),  nullable=True),
+    StructField("country_name_mlco2",         StringType(),  nullable=True),
+    StructField("country_name_global_petrol", StringType(),  nullable=True),
+    StructField("iso_alpha2",                 StringType(),  nullable=True),
+    StructField("iso_alpha3",                 StringType(),  nullable=True),
+    StructField("electricity_maps_zone",      StringType(),  nullable=False),
+    StructField("is_primary_zone",            BooleanType(), nullable=True),
+    StructField("mapping_notes",              StringType(),  nullable=True),
+])
+
+# =============================================================================
+# 12. WORLD BANK — Metadata Country (Tabla de Dimensión)
+# =============================================================================
+WORLD_BANK_METADATA_SCHEMA = StructType([
+    StructField("country_code",  StringType(), nullable=False),
+    StructField("region",        StringType(), nullable=True),
+    StructField("income_group",  StringType(), nullable=True),
+    StructField("special_notes", StringType(), nullable=True),
+    StructField("table_name",    StringType(), nullable=True),
+])
