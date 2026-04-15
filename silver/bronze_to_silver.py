@@ -487,7 +487,7 @@ def process_owid(spark: SparkSession) -> tuple[DataFrame, int]:
     df_clean = df_selected.filter(
         F.col("year").isNotNull() &
         F.col("country").isNotNull() & (F.trim(F.col("country")) != "") &
-        F.col("iso_code").isNotNull() &
+        # F.col("iso_code").isNotNull() &
         (
             F.col("carbon_intensity_elec").isNull() |
             (F.col("carbon_intensity_elec") >= 0)
@@ -669,8 +669,12 @@ def process_world_bank_metadata(spark: SparkSession) -> tuple[DataFrame, int]:
     if "Unnamed: 5" in df_renamed.columns:
         df_renamed = df_renamed.drop("Unnamed: 5")
 
-    # ── SELF-HEALING: country_code no puede ser nulo
-    df_clean = df_renamed.filter(F.col("country_code").isNotNull())
+    # ── SELF-HEALING: country_code no puede ser nulo y debe ser único
+    df_clean = (
+        df_renamed
+        .filter(F.col("country_code").isNotNull())
+        .dropDuplicates(["country_code"])
+    )
     df = _log_dropped(df_renamed, df_clean, "reference/world_bank_metadata")
 
     result: WriteResult = write_to_silver(df, "reference/world_bank_metadata")
