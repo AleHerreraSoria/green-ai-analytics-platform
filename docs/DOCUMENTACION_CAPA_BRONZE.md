@@ -128,7 +128,7 @@ Documentos por prefijo:
 
 | Carpeta (prefijo) | Documento(s) en el bucket | Origen en el repositorio |
 |-------------------|---------------------------|---------------------------|
-| `electricity_maps/` | `electricity_mix/latest`, `carbon_intensity/{latest,past,history,past-range}`, `zones/catalog`. | `scripts/ingest_electricity_maps.py` (carga ya operativa en este bucket). |
+| `electricity_maps/` | `electricity_mix/latest`, `carbon_intensity/{latest,past,history,past-range}`. | `scripts/ingest_electricity_maps.py` (carga ya operativa en este bucket). |
 | `reference/` | `geo_cloud_to_country_and_zones.csv` | `bronze/reference/geo_cloud_to_country_and_zones.csv` (diccionario §7). |
 | `reference/` | `aws_ec2_on_demand_usd_per_hour.csv` | `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv` (diccionario §8). |
 | `global_petrol_prices/` | `electricity_prices_by_country_2023_2026_avg.csv` | `data/Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` |
@@ -151,8 +151,6 @@ Estructura de carpetas (prefijos) relevante dentro de `electricity_maps/`:
 
 ```
 s3://green-ai-pf-bronze-a0e96d06/electricity_maps/
-├── zones/
-│   └── catalog/<run_slug>.json
 ├── electricity_mix/
 │   └── latest/zone=<ZONE>/<run_slug>.json
 └── carbon_intensity/

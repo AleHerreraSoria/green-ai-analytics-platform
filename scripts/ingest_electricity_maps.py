@@ -4,7 +4,6 @@ Ingesta Bronze desde Electricity Maps → S3 (o disco) bajo electricity_maps/.
 Cubre el contrato de `docs/DICCIONARIO_DE_DATOS.md` §2:
   §2.1 Carbon intensity — latest, past (un datetime), history (ventana ~24 h API v4)
   §2.2 Electricity mix — latest (única temporalidad en el diccionario)
-  §2.3 Catálogo de zonas (/v4/zones o fallback /v3/zones)
 
 Modos:
   --mode latest   → pensado para Airflow frecuente (snapshot actual + past 1h + history 24h)
@@ -159,11 +158,6 @@ def _write_local(root: Path, key_suffix: str, body: bytes) -> Path:
     return path
 
 
-def _zones_catalog_urls(base: str) -> list[str]:
-    b = base.rstrip("/")
-    return [f"{b}/v4/zones", f"{b}/v3/zones"]
-
-
 def _common_api_params(args: argparse.Namespace) -> dict[str, str | bool | None]:
     d: dict[str, str | bool | None] = {}
     if getattr(args, "temporal_granularity", None):
@@ -282,11 +276,6 @@ def main() -> int:
         help="Solo electricity-mix/*.",
     )
     parser.add_argument(
-        "--skip-zones-catalog",
-        action="store_true",
-        help="No descargar /v4/zones (ni v3 fallback).",
-    )
-    parser.add_argument(
         "--skip-mix",
         action="store_true",
         help="No llamar electricity-mix/*.",
@@ -357,13 +346,6 @@ def main() -> int:
             print("[error] history-start debe ser < history-end.", file=sys.stderr)
             return 1
 
-    if args.skip_zone_endpoints and args.skip_zones_catalog:
-        print(
-            "[error] --skip-zone-endpoints y --skip-zones-catalog juntos no dejan trabajo.",
-            file=sys.stderr,
-        )
-        return 1
-
     if fetch_per_zone and not zones:
         print("[error] no hay zonas. Usa --zone o rellena electricity_maps_zone en el CSV.", file=sys.stderr)
         return 1
@@ -411,20 +393,6 @@ def main() -> int:
         print(f"[error] HTTP {code} {url} body[:200]={body[:200]!r}", file=sys.stderr)
         errors += 1
         return False
-
-    if not args.skip_zones_catalog:
-        for zurl in _zones_catalog_urls(base):
-            if args.dry_run:
-                print(f"[dry-run] GET {zurl}")
-                break
-            code, body = _fetch(zurl, token, args.timeout, args.user_agent)
-            if code == 200 and body:
-                persist(f"electricity_maps/zones/catalog/{run_slug}.json", body)
-                break
-            print(f"[aviso] zonas {zurl} -> HTTP {code}", file=sys.stderr)
-        else:
-            print("[error] catálogo de zonas (v4/v3) no disponible.", file=sys.stderr)
-            errors += 1
 
     if args.mode == "history" and fetch_per_zone and not args.skip_carbon:
         chunks = _iter_past_range_chunks(h_start, h_end, _PAST_RANGE_MAX_CHUNK)

@@ -344,6 +344,15 @@ def validate_world_bank_metadata(spark: SparkSession, report: ValidationReport):
     _check_null_rate(report, df, DATASET, "country_code", max_null_pct=0.0)
     _check_uniqueness(report, df, DATASET, "country_code")
 
+
+def validate_zones_dimension(spark: SparkSession, report: ValidationReport):
+    """Valida dimensión de zonas derivada de endpoints observados."""
+    df = spark.read.format("delta").load(f"{SILVER}/reference/zones_dimension")
+    DATASET = "zones_dimension"
+
+    _check_null_rate(report, df, DATASET, "zone_key", max_null_pct=0.0)
+    _check_uniqueness(report, df, DATASET, "zone_key")
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -386,7 +395,8 @@ def main(fail_on_error: bool = False):
         validate_world_bank,
         validate_ec2_pricing,
         validate_geo_cloud_mapping,
-        validate_world_bank_metadata
+        validate_world_bank_metadata,
+        validate_zones_dimension,
     ]
 
     for fn in validators:

@@ -16,6 +16,22 @@ explícitamente definidos, nombres de columna en `snake_case` y fechas
 casteadas a `TimestampType`. Cada dataset Silver es el insumo directo para
 la capa Gold (KPIs, visualizaciones y modelos de correlación).
 
+### Decisión de diseño vigente: eliminación de `zones/catalog`
+
+El endpoint/documento `electricity_maps/zones/catalog` fue retirado del flujo
+por inestabilidad funcional (respuesta vacía desde API).  
+En su lugar, Silver construye `reference/zones_dimension` a partir de zonas
+observadas en endpoints activos (`carbon_intensity/latest|past|history` y
+`electricity_mix/latest`) y las enriquece con
+`reference/geo_cloud_to_country_and_zones.csv`.
+
+Implicaciones:
+
+- No existe dependencia operativa de `zones/catalog` en Bronze/Silver.
+- `reference/zones_dimension` es ahora la dimensión oficial de zonas.
+- Validación dedicada: `zone_key` no nulo y único.
+- Auditoría dedicada: conteo Bronze basado en zonas observadas reales.
+
 ---
 
 ## 2. Estructura de Ramas (Simulación GitHub Flow)
@@ -87,14 +103,17 @@ Silver que `latest/past` pero puede tener **más filas** que archivos Bronze.
 
 ---
 
-### 3.4 `electricity_maps/zones/catalog` — Mapa aplanado
+### 3.4 `reference/zones_dimension` — Zonas observadas y enriquecidas
 
-| Columna Silver  | Tipo   | Origen Bronze                    |
-|-----------------|--------|----------------------------------|
-| `zone_key`      | String | Clave del mapa JSON (ej. `DE`)   |
-| `zone_name`     | String | `zoneName`                       |
-| `country_name`  | String | `countryName`                    |
-| `country_code`  | String | `countryCode` (2 letras)         |
+| Columna Silver  | Tipo   | Origen / Regla                                |
+|-----------------|--------|-----------------------------------------------|
+| `zone_key`      | String | Zona observada en carbon/mix                  |
+| `zone_name`     | String | `NULL` (no existe catálogo oficial en Bronze) |
+| `country_name`  | String | `geo_cloud_to_country_and_zones.csv`          |
+| `country_code`  | String | `iso_alpha2` desde mapeo de referencia        |
+| `iso_alpha2`    | String | mapeo de referencia                            |
+| `iso_alpha3`    | String | mapeo de referencia                            |
+| `source`        | String | literal de trazabilidad del origen            |
 
 ---
 
@@ -257,13 +276,13 @@ Definida centralmente en `feature/storage-partitioning-silver/writer.py`:
 |--------------------------------------------|-----------------------------|
 | `electricity_maps/carbon_intensity/*`      | `zone`, `year`, `month`     |
 | `electricity_maps/electricity_mix/latest`  | `zone`, `year`, `month`     |
-| `electricity_maps/zones/catalog`           | `country_code`              |
-| `usage_logs`                               | `year`, `month`, `region`   |
-| `owid`                                     | `year`                      |
-| `world_bank/ict_exports`                   | `year`                      |
-| `mlco2/yearly_averages`                    | `year`                      |
-| `reference/ec2_pricing`                    | `cloud_provider`            |
-| `global_petrol_prices`                     | *(sin partición — 145 filas)*|
+| `reference/zones_dimension`                | *(sin partición)*           |
+| `usage_logs`                               | `year`, `month`             |
+| `owid`                                     | *(sin partición)*           |
+| `world_bank/ict_exports`                   | *(sin partición)*           |
+| `mlco2/yearly_averages`                    | *(sin partición)*           |
+| `reference/ec2_pricing`                    | *(sin partición)*           |
+| `global_petrol_prices`                     | *(sin partición — 145 filas)* |
 
 ---
 
@@ -287,5 +306,5 @@ persistida en `s3://SILVER/audit/audit_log/` particionada por `run_date`.
   en producción.
 - Las variables de entorno se cargan desde `.env` en desarrollo local y desde
   AWS Secrets Manager / SSM Parameter Store en producción.
-- El esquema del catálogo de zonas de Electricity Maps puede cambiar con el
-  tiempo (API pública); revalidar periódicamente.
+- Las zonas se derivan de observaciones reales de endpoints activos y se
+  enriquecen con `reference/geo_cloud_to_country_and_zones.csv`.

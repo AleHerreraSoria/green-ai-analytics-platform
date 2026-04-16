@@ -47,6 +47,27 @@ Superada exitosamente la etapa de testing aislada, el motor de Spark fue enrutad
 
 ---
 
+## 4.1 Cambio funcional: `zones/catalog` removido
+
+Para estabilizar el flujo, se eliminó por completo la dependencia de
+`electricity_maps/zones/catalog` debido a que llegaba vacío desde API.
+
+En la implementación vigente:
+
+*   **No se ingesta `zones/catalog` en Bronze.**
+*   **No se procesa `zones/catalog` en Silver.**
+*   La dimensión `reference/zones_dimension` se deriva desde endpoints activos
+    (`carbon_intensity/latest`, `carbon_intensity/past`,
+    `carbon_intensity/history`, `electricity_mix/latest`) y se enriquece con
+    `reference/geo_cloud_to_country_and_zones.csv`.
+*   Se agregaron controles explícitos de calidad y auditoría para esa nueva
+    dimensión (`zone_key` no nulo/único y conteo Bronze observado).
+
+Este cambio evita dependencias frágiles y mantiene trazabilidad completa del
+origen de zonas usadas por la capa Gold.
+
+---
+
 ## 5. Evolución a Lakehouse: Integrando Delta Lake 🧊
 
 Los archivos Parquet estándar convencionales suponían un riesgo latente persistente para la arquitectura si el proceso resultaba volátil.
@@ -65,7 +86,7 @@ Empujando hacia la alta frecuencia el motor analítico, descubrimos discrepancia
 > **Solución:** Elaboramos un "Downgrade y Bloqueo" drástico y limpio reenfocando nuestras interfaces de procesamiento hacia la versión más blindada de uso LTS: **Python 3.11** a través de un estricto `requirements.txt` en combinación manual bajo entorno Spark `3.5.1`.
 
 ### Desafío 2: Catalyst RecursionError (Stack Overflow)
-> **Problema:** En el subset de datos `zones/catalog` nos vimos contra un muro en memoria dinámica del clúster derivado de tener 400 iteraciones lógicas en bucles clásicos (`.union()`). A pesar de abstraerlo vectorial y compactadamente en iteradores paralelos de Comprensión (via `F.array`), el parser CloudPickle y Py4j se corrompían internamente logrando reventar la barrera con un `Stack Overflow Error (usado: 2912 kB)`.
+> **Problema:** En un subset de datos de mapeos geográficos nos vimos contra un muro en memoria dinámica del clúster derivado de tener 400 iteraciones lógicas en bucles clásicos (`.union()`). A pesar de abstraerlo vectorial y compactadamente en iteradores paralelos de Comprensión (via `F.array`), el parser CloudPickle y Py4j se corrompían internamente logrando reventar la barrera con un `Stack Overflow Error (usado: 2912 kB)`.
 > **Solución:** Reasumimos la táctica. Cambiamos un acople estático por serialización Spark Dataframe Nativa estructurando todo velozmente por medio puramente transaccional: una lógica escalar vectorial que eliminó completamente la sobrecarga sobre el AST al serializar el JVM driver.
 
 ### Desafío 3: Compatibilidad de Distutils (World Bank Dataset)

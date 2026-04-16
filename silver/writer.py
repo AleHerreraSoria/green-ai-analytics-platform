@@ -34,29 +34,6 @@ logger = logging.getLogger("green-ai.writer")
 # Determina las columnas de partición Hive para cada dataset Silver.
 # Se define como constante para que sea auditable y documentable.
 
-""" Test
-PARTITION_STRATEGIES: dict[str, list[str]] = {
-    # Electricity Maps: zona eléctrica + ventana temporal
-    "electricity_maps/carbon_intensity/latest":  ["zone", "year", "month"],
-    "electricity_maps/carbon_intensity/past":    ["zone", "year", "month"],
-    "electricity_maps/carbon_intensity/history": ["zone", "year", "month"],
-    "electricity_maps/electricity_mix/latest":   ["zone", "year", "month"],
-    "electricity_maps/zones/catalog":            ["country_code"],
-
-    # Catálogos estáticos: sin partición (tabla pequeña de referencia)
-    "global_petrol_prices":  [],
-    "reference/ec2_pricing": ["cloud_provider"],
-    "mlco2/yearly_averages": ["year"],
-
-    # Macrodatos históricos: año es la dimensión natural
-    "owid":                  ["year"],
-    "world_bank/ict_exports": ["year"],
-
-    # Logs: año + mes + región (alta cardinalidad → 3 niveles)
-    "usage_logs":            ["year", "month", "region"],
-}
-"""
-
 PARTITION_STRATEGIES: dict[str, list[str]] = {
     # 1. Electricity Maps (Streaming / Alto Volumen)
     "electricity_maps/carbon_intensity/latest":  ["year", "month"],
@@ -65,7 +42,7 @@ PARTITION_STRATEGIES: dict[str, list[str]] = {
     "electricity_maps/electricity_mix/latest":   ["year", "month"],
     
     # Catálogos estáticos: Nunca se particionan. Son diminutos (KBs/MBs).
-    "electricity_maps/zones/catalog":  [],
+    "reference/zones_dimension": [],
     "global_petrol_prices":  [],
     "reference/ec2_pricing": [],
     "reference/geo_cloud_mapping": [],
