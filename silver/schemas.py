@@ -112,20 +112,7 @@ ELECTRICITY_MIX_RAW_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 4. ELECTRICITY MAPS — Catálogo de Zonas
-# =============================================================================
-# El JSON de zones es un mapa {zoneKey: {zoneName, countryName, countryCode}}.
-# Se procesa aplanando en bronze_to_silver.py antes de materializar.
-
-ZONES_CATALOG_SCHEMA = StructType([
-    StructField("zone_key",      StringType(), nullable=False),
-    StructField("zone_name",     StringType(), nullable=True),
-    StructField("country_name",  StringType(), nullable=True),
-    StructField("country_code",  StringType(), nullable=True),
-])
-
-# =============================================================================
-# 5. GLOBAL PETROL PRICES
+# 4. GLOBAL PETROL PRICES
 # =============================================================================
 # Fuente: DICCIONARIO_BRONZE_ACTUALIZADO §global_petrol_prices
 # Las columnas se renombran a snake_case en Silver.
@@ -139,7 +126,7 @@ GLOBAL_PETROL_PRICES_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 6. MLCO2 — Promedios Anuales por Zona (yearly_averages)
+# 5. MLCO2 — Promedios Anuales por Zona (yearly_averages)
 # =============================================================================
 
 # NOTA: los nombres coinciden con los encabezados EXACTOS del CSV Bronze.
@@ -155,7 +142,7 @@ MLCO2_YEARLY_AVG_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 7. OWID — Energy Data
+# 6. OWID — Energy Data
 # =============================================================================
 # 130 columnas: se definen únicamente las relevantes para las preguntas de
 # negocio. Las restantes se cargará como StringType y se descartarán en la
@@ -187,7 +174,7 @@ OWID_ENERGY_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 8. REFERENCE — Precios EC2 On-Demand
+# 7. REFERENCE — Precios EC2 On-Demand
 # =============================================================================
 
 EC2_PRICING_SCHEMA = StructType([
@@ -207,7 +194,7 @@ EC2_PRICING_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 9. USAGE LOGS (Sintético)
+# 8. USAGE LOGS (Sintético)
 # =============================================================================
 
 USAGE_LOGS_SCHEMA = StructType([
@@ -225,7 +212,7 @@ USAGE_LOGS_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 10. WORLD BANK — ICT Service Exports
+# 9. WORLD BANK — ICT Service Exports
 # =============================================================================
 # CSV con metadatos en las primeras 4 filas → skiprows en lectura Bronze.
 # Las columnas de año (1960–2025) se despivotan (melt) en Silver a formato
@@ -240,7 +227,7 @@ WORLD_BANK_ICT_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 11. GEO CLOUD MAPPING (Tabla Puente Custom)
+# 10. GEO CLOUD MAPPING (Tabla Puente Custom)
 # =============================================================================
 # Mapea regiones Cloud (ej. aws-us-east-1) a zonas de Electricity Maps e ISO codes.
 
@@ -258,7 +245,7 @@ GEO_CLOUD_MAPPING_SCHEMA = StructType([
 ])
 
 # =============================================================================
-# 12. WORLD BANK — Metadata Country (Tabla de Dimensión)
+# 11. WORLD BANK — Metadata Country (Tabla de Dimensión)
 # =============================================================================
 WORLD_BANK_METADATA_SCHEMA = StructType([
     StructField("country_code",  StringType(), nullable=False),

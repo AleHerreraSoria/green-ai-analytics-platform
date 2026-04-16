@@ -139,6 +139,45 @@ def _count_silver(spark, path: str) -> int:
         return -1
 
 
+def _count_observed_zones_bronze(spark) -> int:
+    """Cuenta zonas únicas observadas desde endpoints activos."""
+    try:
+        ci_latest = (
+            spark.read.option("recursiveFileLookup", "true")
+            .json(f"{BRONZE}/electricity_maps/carbon_intensity/latest")
+            .select(F.col("zone").alias("zone_key"))
+        )
+        ci_past = (
+            spark.read.option("recursiveFileLookup", "true")
+            .json(f"{BRONZE}/electricity_maps/carbon_intensity/past")
+            .select(F.col("zone").alias("zone_key"))
+        )
+        ci_history = (
+            spark.read.option("multiLine", "true")
+            .option("recursiveFileLookup", "true")
+            .json(f"{BRONZE}/electricity_maps/carbon_intensity/history")
+            .withColumn("event", F.explode("history"))
+            .select(F.col("event.zone").alias("zone_key"))
+        )
+        mix_latest = (
+            spark.read.option("multiLine", "true")
+            .option("recursiveFileLookup", "true")
+            .json(f"{BRONZE}/electricity_maps/electricity_mix/latest")
+            .select(F.col("zone").alias("zone_key"))
+        )
+        return (
+            ci_latest.unionByName(ci_past)
+            .unionByName(ci_history)
+            .unionByName(mix_latest)
+            .filter(F.col("zone_key").isNotNull())
+            .distinct()
+            .count()
+        )
+    except Exception as e:
+        print(f"    ⚠️  No se pudo contar zonas observadas Bronze: {e}")
+        return -1
+
+
 # ---------------------------------------------------------------------------
 # Función de auditoría principal
 # ---------------------------------------------------------------------------
@@ -211,10 +250,9 @@ def run_audit(spark: SparkSession) -> list[AuditEntry]:
                                           explode_col="data"),
             f"{SILVER}/electricity_maps/electricity_mix/latest",
         ),
-        "electricity_maps/zones/catalog": (
-            lambda: _count_json_recursive(spark,
-                                          f"{BRONZE}/electricity_maps/zones/catalog"),
-            f"{SILVER}/electricity_maps/zones/catalog",
+        "reference/zones_dimension": (
+            lambda: _count_observed_zones_bronze(spark),
+            f"{SILVER}/reference/zones_dimension",
         ),
     }
 

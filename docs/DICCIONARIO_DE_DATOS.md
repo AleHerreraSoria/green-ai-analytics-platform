@@ -7,7 +7,7 @@ Este documento describe el **stack de información** del proyecto: contexto hist
 | # | Fuente | Descripción | Acceso | Justificación de elección |
 |---|--------|-------------|--------|---------------------------|
 | 1 | **Our World in Data (Energy)** | Datos históricos por país: PIB, población y mezcla energética (renovables vs. fósiles). | [Dataset en GitHub (OWID)](https://github.com/owid/energy-data) | Contexto económico y base comparativa histórica para países de América. |
-| 2 | **Electricity Maps API** | Intensidad de carbono (gCO₂eq/kWh) en tiempo real por zona geográfica; mix y catálogo de zonas. | [Electricity Maps](https://www.electricitymaps.com/) | Componente en tiempo real que justifica ingesta automatizada (p. ej. con Airflow). |
+| 2 | **Electricity Maps API** | Intensidad de carbono (gCO₂eq/kWh) en tiempo real por zona geográfica y mix eléctrico. | [Electricity Maps](https://www.electricitymaps.com/) | Componente en tiempo real que justifica ingesta automatizada (p. ej. con Airflow). |
 | 3 | **MLCO2 — hardware e impacto** | Especificaciones TDP de GPUs/CPUs y factores de emisión por región de cómputo (proyecto MLCO2 / *impact*). | [MLCO2 / impact (GitHub)](https://github.com/mlco2/impact) | Tabla maestra para pasar de uso de hardware a consumo energético y emisiones. |
 | 4 | **Generador de logs (sintético)** | Registros de sesiones de uso de IA (usuario, GPU, región, horas, etc.). | Desarrollo propio | Control de volumen (p. ej. 100k+ filas) y simulación de movilidad entre regiones de cómputo. |
 | 5 | **Precios de electricidad por país** | Tarifas medias residenciales y de negocio en USD/kWh (promedio 2023-2026) por país. | [GlobalPetrolPrices.com — Electricity prices](https://www.globalpetrolprices.com/electricity_prices/); copia local: `Global_Petrol_Prices/electricity_prices_by_country_2023_2026_avg.csv` | Complementa el contexto energético con el **costo** de la electricidad a nivel país (distinto de intensidad de carbono o mix). |
@@ -172,7 +172,7 @@ Panel anual: cada fila es una observación para una **entidad geográfica** (pa�
 
 ## 2. Electricity Maps API
 
-Especificación de la **capa Silver** para respuestas JSON: intensidad de carbono (Latest / Past / History), mix eléctrico (Latest) y catálogo de zonas. Los endpoints de intensidad comparten la misma estructura base; en History se recibe una lista de objetos con ese esquema.
+Especificación de la **capa Silver** para respuestas JSON: intensidad de carbono (Latest / Past / History) y mix eléctrico (Latest). Los endpoints de intensidad comparten la misma estructura base; en History se recibe una lista de objetos con ese esquema.
 
 ### 2.1 Intensidad de carbono (Latest / Past / History)
 

@@ -59,7 +59,6 @@ try:
         ELECTRICITY_MIX_RAW_SCHEMA,
         MLCO2_YEARLY_AVG_SCHEMA,
         USAGE_LOGS_SCHEMA,
-        ZONES_CATALOG_SCHEMA,
     )
     from writer import WriteResult, write_to_silver
 except ImportError:
@@ -73,7 +72,6 @@ except ImportError:
         ELECTRICITY_MIX_RAW_SCHEMA,
         MLCO2_YEARLY_AVG_SCHEMA,
         USAGE_LOGS_SCHEMA,
-        ZONES_CATALOG_SCHEMA,
     )
     from writer import WriteResult, write_to_silver
 
@@ -324,42 +322,83 @@ def process_electricity_mix(spark: SparkSession) -> tuple[DataFrame, int]:
 
 
 # ---------------------------------------------------------------------------
-# 4. Zones Catalog (mapa JSON → tabla plana)
+# 4. Zonas observadas derivadas de endpoints activos
 # ---------------------------------------------------------------------------
 
-def process_zones_catalog(spark: SparkSession) -> tuple[DataFrame, int]:
-    bronze_path = f"{BRONZE}/electricity_maps/zones/catalog"
-    df_raw = spark.read.option("multiLine", "true").json(bronze_path)
+def process_observed_zones_dimension(spark: SparkSession) -> tuple[DataFrame, int]:
+    # Fuentes con cobertura real de zonas observadas en producción.
+    ci_latest = (
+        spark.read.schema(CARBON_INTENSITY_FLAT_SCHEMA)
+        .option("recursiveFileLookup", "true")
+        .json(f"{BRONZE}/electricity_maps/carbon_intensity/latest")
+        .select(F.col("zone").alias("zone_key"))
+    )
+    ci_past = (
+        spark.read.schema(CARBON_INTENSITY_FLAT_SCHEMA)
+        .option("recursiveFileLookup", "true")
+        .json(f"{BRONZE}/electricity_maps/carbon_intensity/past")
+        .select(F.col("zone").alias("zone_key"))
+    )
+    ci_history = (
+        spark.read.schema(CARBON_INTENSITY_HISTORY_RAW_SCHEMA)
+        .option("multiLine", "true")
+        .option("recursiveFileLookup", "true")
+        .json(f"{BRONZE}/electricity_maps/carbon_intensity/history")
+        .withColumn("event", F.explode("history"))
+        .select(F.col("event.zone").alias("zone_key"))
+    )
+    mix_latest = (
+        spark.read.schema(ELECTRICITY_MIX_RAW_SCHEMA)
+        .option("multiLine", "true")
+        .option("recursiveFileLookup", "true")
+        .json(f"{BRONZE}/electricity_maps/electricity_mix/latest")
+        .select(F.col("zone").alias("zone_key"))
+    )
 
-    zone_keys = df_raw.columns
+    observed_zones = (
+        ci_latest.unionByName(ci_past)
+        .unionByName(ci_history)
+        .unionByName(mix_latest)
+        .filter(F.col("zone_key").isNotNull())
+        .dropDuplicates(["zone_key"])
+    )
 
-    struct_cols = [
-        F.struct(
-            F.lit(zk).alias("zone_key"),
-            F.col(f"`{zk}`.zoneName").alias("zone_name"),
-            F.col(f"`{zk}`.countryName").alias("country_name"),
-            F.col(f"`{zk}`.countryCode").alias("country_code"),
+    geo_mapping = (
+        spark.read.option("header", "true")
+        .option("inferSchema", "true")
+        .csv(f"{BRONZE}/reference/geo_cloud_to_country_and_zones.csv")
+        .select(
+            F.col("electricity_maps_zone").alias("zone_key"),
+            "iso_alpha2",
+            "iso_alpha3",
+            "country_name_mlco2",
+            "country_name_global_petrol",
         )
-        for zk in zone_keys
-    ]
+        .dropDuplicates(["zone_key"])
+    )
 
-    if not struct_cols:
-        from schemas import ZONES_CATALOG_SCHEMA
-        df = spark.createDataFrame([], schema=ZONES_CATALOG_SCHEMA)
-    else:
-        df = (
-            df_raw
-            .withColumn("zones_array", F.array(*struct_cols))
-            .select(F.explode("zones_array").alias("zone_data"))
-            .select(
-                F.col("zone_data.zone_key"),
-                F.col("zone_data.zone_name"),
-                F.col("zone_data.country_name"),
-                F.col("zone_data.country_code"),
-            )
+    df = (
+        observed_zones.alias("z")
+        .join(geo_mapping.alias("m"), on="zone_key", how="left")
+        .withColumn("zone_name", F.lit(None).cast("string"))
+        .withColumn(
+            "country_name",
+            F.coalesce(F.col("m.country_name_mlco2"), F.col("m.country_name_global_petrol")),
         )
+        .withColumn("country_code", F.col("m.iso_alpha2"))
+        .withColumn("source", F.lit("observed_from_carbon_mix_and_geo_mapping"))
+        .select(
+            "zone_key",
+            "zone_name",
+            "country_name",
+            "country_code",
+            "iso_alpha2",
+            "iso_alpha3",
+            "source",
+        )
+    )
 
-    result = write_to_silver(df, "electricity_maps/zones/catalog")
+    result = write_to_silver(df, "reference/zones_dimension")
     return df, result.rows_written
 
 
@@ -697,7 +736,7 @@ def main():
         ("electricity_maps/carbon_intensity/past",    lambda: process_carbon_intensity_flat(spark, "past")),
         ("electricity_maps/carbon_intensity/history", lambda: process_carbon_intensity_history(spark)),
         ("electricity_maps/electricity_mix/latest",   lambda: process_electricity_mix(spark)),
-        ("electricity_maps/zones/catalog",            lambda: process_zones_catalog(spark)),
+        ("reference/zones_dimension",                 lambda: process_observed_zones_dimension(spark)),
         ("global_petrol_prices",                      lambda: process_global_petrol_prices(spark)),
         ("mlco2/yearly_averages",                     lambda: process_mlco2_yearly_avg(spark)),
         ("owid",                                      lambda: process_owid(spark)),
