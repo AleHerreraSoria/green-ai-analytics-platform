@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lower, trim, coalesce, lit
+from pyspark.sql.functions import col, lower, trim, coalesce, lit, when
 
 spark = SparkSession.builder \
     .appName("gold_fact_ai_jobs") \
@@ -26,6 +26,9 @@ prices = spark.read.parquet("s3a://green-ai-pf-silver-a0e96d06/global_petrol_pri
 ec2 = spark.read.parquet("s3a://green-ai-pf-silver-a0e96d06/reference/ec2_pricing/") \
     .select("cloud_region", "instance_type", "price_usd_per_hour")
 
+owid = spark.read.parquet("s3a://green-ai-pf-silver-a0e96d06/owid/")
+wb = spark.read.parquet("s3a://green-ai-pf-silver-a0e96d06/world_bank/ict_exports/")
+
 # -------------------------
 # NORMALIZE
 # -------------------------
@@ -49,7 +52,7 @@ ec2 = ec2.withColumn("region_clean", lower(trim(col("cloud_region")))) \
          .dropDuplicates(["region_clean", "instance_clean"])
 
 # -------------------------
-# JOINS LIMPIOS
+# JOINS BASE
 # -------------------------
 df = logs.join(geo, "region_clean", "left")
 
@@ -69,6 +72,54 @@ df = df.join(ec2,
        .drop(ec2["region_clean"]).drop("instance_clean")
 
 # -------------------------
+# COUNTRY CLEAN
+# -------------------------
+df = df.withColumn("country_clean", lower(trim(col("country_name_mlco2"))))
+
+df = df.withColumn("country_clean",
+    when(col("country_clean") == "usa", "united states")
+    .when(col("country_clean") == "south korea", "korea, rep.")
+    .otherwise(col("country_clean"))
+)
+
+# -------------------------
+# OWID (2020)
+# -------------------------
+owid = owid.filter(col("year") == 2020)
+
+owid = owid.withColumn("country_clean", lower(trim(col("country"))))
+
+owid = owid.select(
+    "country_clean",
+    "gdp",
+    "population",
+    "carbon_intensity_elec"
+)
+
+owid = owid.withColumn(
+    "gdp_per_capita",
+    col("gdp") / col("population")
+)
+
+# -------------------------
+# WORLD BANK (2020)
+# -------------------------
+wb = wb.filter(col("year") == 2020)
+
+wb = wb.withColumn("country_clean", lower(trim(col("country_name"))))
+
+wb = wb.select(
+    "country_clean",
+    col("ict_exports_usd").alias("ict_exports")
+)
+
+# -------------------------
+# JOINS FINALES
+# -------------------------
+df = df.join(owid, "country_clean", "left")
+df = df.join(wb, "country_clean", "left")
+
+# -------------------------
 # MÉTRICAS
 # -------------------------
 df = df.withColumn("energy_fixed", coalesce(col("energy_consumed_kwh"), lit(1.0)))
@@ -82,13 +133,44 @@ df = df.withColumn("cost_energy", col("energy_fixed") * col("price_kwh"))
 df = df.withColumn("cost_compute", col("duration_fixed") * col("price_compute"))
 df = df.withColumn("emissions_co2", col("energy_fixed") * col("carbon_fixed"))
 
+# -------------------------
+# 🔥 FIX CLAVE: CAST TIPOS
+# -------------------------
+df = df.select(
+    col("session_id").cast("string"),
+    col("user_id").cast("string"),
+    col("timestamp").cast("string"),
+    col("gpu_model").cast("string"),
+    col("region").cast("string"),
+    col("duration_hours").cast("double"),
+    col("instance_type").cast("string"),
+    col("gpu_utilization").cast("double"),
+    col("job_type").cast("string"),
+    col("energy_consumed_kwh").cast("double"),
+    col("execution_status").cast("string"),
+    col("country_name_mlco2").cast("string"),
+    col("carbon_intensity_avg").cast("double"),
+    col("residential_usd_per_kwh").cast("double"),
+    col("price_usd_per_hour").cast("double"),
+    col("cost_energy").cast("double"),
+    col("cost_compute").cast("double"),
+    col("emissions_co2").cast("double"),
+    col("country_clean").cast("string"),
+    col("gdp").cast("double"),
+    col("population").cast("double"),
+    col("carbon_intensity_elec").cast("double"),
+    col("gdp_per_capita").cast("double"),
+    col("ict_exports").cast("double")
+)
+
 print("FILAS:", df.count())
 
 # -------------------------
-# WRITE FINAL
+# WRITE FINAL (SIN repartition)
 # -------------------------
-df.repartition(1).write \
+df.write \
     .mode("overwrite") \
+    .option("compression", "snappy") \
     .parquet("s3a://green-ai-pf-gold-a0e96d06/fact_ai_jobs/")
 
-print("✅ ESCRITO EN S3")
+print("✅ GOLD FINAL OK")
