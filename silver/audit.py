@@ -200,6 +200,9 @@ def run_audit(spark: SparkSession) -> list[AuditEntry]:
             lambda: _count_csv(spark, f"{BRONZE}/mlco2/2021-10-27yearly_averages.csv"),
             f"{SILVER}/mlco2/yearly_averages",
         ),
+        "mlco2/instances": (lambda: _count_csv(spark, f"{BRONZE}/mlco2/instances.csv"), f"{SILVER}/mlco2/instances"),
+        "mlco2/impact": (lambda: _count_csv(spark, f"{BRONZE}/mlco2/impact.csv"), f"{SILVER}/mlco2/impact"),
+        "mlco2/gpus": (lambda: _count_csv(spark, f"{BRONZE}/mlco2/gpus.csv"), f"{SILVER}/mlco2/gpus"),
         "owid": (
             lambda: _count_csv(spark, f"{BRONZE}/owid/owid-energy-data.csv"),
             f"{SILVER}/owid",

@@ -254,3 +254,41 @@ WORLD_BANK_METADATA_SCHEMA = StructType([
     StructField("special_notes", StringType(), nullable=True),
     StructField("table_name",    StringType(), nullable=True),
 ])
+
+# =============================================================================
+# 13, 14 y 15. MLCO2 — Catálogos (Instances, Impact, GPUs)
+# =============================================================================
+MLCO2_INSTANCES_SCHEMA = StructType([
+    StructField("provider", StringType(), nullable=True),
+    StructField("id", StringType(), nullable=False),
+    StructField("gpu", StringType(), nullable=True),
+    StructField("source", StringType(), nullable=True),
+])
+
+MLCO2_IMPACT_SCHEMA = StructType([
+    StructField("provider", StringType(), nullable=True),
+    StructField("providerName", StringType(), nullable=True),
+    StructField("offsetRatio", IntegerType(), nullable=True),
+    StructField("region", StringType(), nullable=False),
+    StructField("regionName", StringType(), nullable=True),
+    StructField("country", StringType(), nullable=True),
+    StructField("state", StringType(), nullable=True),
+    StructField("city", StringType(), nullable=True),
+    StructField("impact", DoubleType(), nullable=True),
+    StructField("source", StringType(), nullable=True),
+    StructField("PUE", DoubleType(), nullable=True),
+    StructField("PUE source", StringType(), nullable=True),
+    StructField("comment", StringType(), nullable=True),
+])
+
+MLCO2_GPUS_SCHEMA = StructType([
+    StructField("name", StringType(), nullable=False),
+    StructField("type", StringType(), nullable=True),
+    StructField("tdp_watts", IntegerType(), nullable=True),
+    StructField("TFLOPS32", DoubleType(), nullable=True),
+    StructField(" TFLOPS16", DoubleType(), nullable=True),
+    StructField("GFLOPS32/W", StringType(), nullable=True),
+    StructField("GFLOPS16/W", StringType(), nullable=True),
+    StructField("memory", StringType(), nullable=True),
+    StructField("source", StringType(), nullable=True),
+])
