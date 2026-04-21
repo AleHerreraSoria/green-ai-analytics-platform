@@ -6,6 +6,7 @@ import requests
 import json
 import pandas as pd
 import pendulum
+import os  # <--- AGREGÁ ESTA LÍNEA AQUÍ
 from datetime import timedelta
 
 # 1. FECHA DE INICIO ESTÁTICA (Soluciona el error de la línea 79)
@@ -19,15 +20,34 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
+import os
+import glob
+
 def get_zones_from_csv():
-    # Nota: Airflow 3 recomienda no hacer esto en el top-level, 
-    # pero para tareas dinámicas es necesario. Lo mantenemos simple.
-    path = "/opt/airflow/dags/data/geo_cloud_to_country_and_zones.csv"
-    try:
-        df = pd.read_csv(path)
-        return df['electricity_maps_zone'].dropna().unique().tolist()
-    except:
-        return ['DE', 'FR']
+    # 1. Buscamos el archivo en TODO el directorio de dags, no importa qué tan profundo esté
+    # El patrón /**/ busca en todas las subcarpetas de forma recursiva
+    patron_busqueda = "/opt/airflow/dags/**/geo_cloud_to_country_and_zones.csv"
+    archivos_encontrados = glob.glob(patron_busqueda, recursive=True)
+    
+    if archivos_encontrados:
+        path_real = archivos_encontrados[0]
+        try:
+            df = pd.read_csv(path_real)
+            zonas = df['electricity_maps_zone'].dropna().unique().tolist()
+            print(f"✅ ¡ÉXITO! Archivo encontrado en: {path_real}")
+            print(f"📊 Cargadas {len(zonas)} zonas.")
+            return zonas
+        except Exception as e:
+            print(f"❌ Error al leer el archivo encontrado: {e}")
+            return ['DE', 'FR']
+    else:
+        # Si llega acá, es que el archivo NO está dentro del contenedor
+        # Vamos a listar lo que SÍ hay para darte la respuesta final
+        print("🔍 Listando contenido de /opt/airflow/dags para diagnóstico:")
+        for root, dirs, files in os.walk("/opt/airflow/dags"):
+            print(f"Directorio: {root} -> Archivos: {files}")
+            
+        raise FileNotFoundError("❌ El archivo CSV no existe en NINGUNA subcarpeta de /opt/airflow/dags. Verificá tu estructura en Windows.")
 
 def fetch_em_to_s3(zone, **kwargs):
     # Traemos las variables RECIÉN cuando la tarea se ejecuta (Runtime)
