@@ -353,6 +353,16 @@ def validate_zones_dimension(spark: SparkSession, report: ValidationReport):
     _check_null_rate(report, df, DATASET, "zone_key", max_null_pct=0.0)
     _check_uniqueness(report, df, DATASET, "zone_key")
 
+
+def validate_mlco2_catalogs(spark: SparkSession, report: ValidationReport):
+    """Valida que las PKs de los catálogos MLCO2 no sean nulas."""
+    for ds, pk in [("instances", "id"), ("impact", "region"), ("gpus", "gpu_model")]:
+        try:
+            df = spark.read.format("delta").load(f"{SILVER}/mlco2/{ds}")
+            _check_null_rate(report, df, f"mlco2/{ds}", pk, max_null_pct=0.0)
+        except Exception as e:
+            report.add(CheckResult(f"mlco2/{ds}", "read_table", False, str(e)))
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -397,6 +407,7 @@ def main(fail_on_error: bool = False):
         validate_geo_cloud_mapping,
         validate_world_bank_metadata,
         validate_zones_dimension,
+        validate_mlco2_catalogs,
     ]
 
     for fn in validators:

@@ -47,6 +47,9 @@ PARTITION_STRATEGIES: dict[str, list[str]] = {
     "reference/ec2_pricing": [],
     "reference/geo_cloud_mapping": [],
     "mlco2/yearly_averages": [],
+    "mlco2/instances": [],
+    "mlco2/impact": [],
+    "mlco2/gpus": [],
     "reference/world_bank_metadata": [],
 
     # 2. Macrodatos históricos (Bajo Volumen)

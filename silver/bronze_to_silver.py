@@ -59,6 +59,9 @@ try:
         ELECTRICITY_MIX_RAW_SCHEMA,
         MLCO2_YEARLY_AVG_SCHEMA,
         USAGE_LOGS_SCHEMA,
+        MLCO2_INSTANCES_SCHEMA,
+        MLCO2_IMPACT_SCHEMA,
+        MLCO2_GPUS_SCHEMA,
     )
     from writer import WriteResult, write_to_silver
 except ImportError:
@@ -72,6 +75,9 @@ except ImportError:
         ELECTRICITY_MIX_RAW_SCHEMA,
         MLCO2_YEARLY_AVG_SCHEMA,
         USAGE_LOGS_SCHEMA,
+        MLCO2_INSTANCES_SCHEMA,
+        MLCO2_IMPACT_SCHEMA,
+        MLCO2_GPUS_SCHEMA,
     )
     from writer import WriteResult, write_to_silver
 
@@ -485,6 +491,41 @@ def process_mlco2_yearly_avg(spark: SparkSession) -> tuple[DataFrame, int]:
 
 
 # ---------------------------------------------------------------------------
+# 6B. MLCO2 — Otros Catálogos
+# ---------------------------------------------------------------------------
+def process_mlco2_instances(spark: SparkSession) -> tuple[DataFrame, int]:
+    df_raw = spark.read.option("header", "true").schema(MLCO2_INSTANCES_SCHEMA).csv(f"{BRONZE}/mlco2/instances.csv")
+    df_clean = df_raw.filter(F.col("id").isNotNull())
+    df = _log_dropped(df_raw, df_clean, "mlco2/instances")
+    result: WriteResult = write_to_silver(df, "mlco2/instances")
+    return df, result.rows_written
+
+def process_mlco2_impact(spark: SparkSession) -> tuple[DataFrame, int]:
+    df_raw = spark.read.option("header", "true").schema(MLCO2_IMPACT_SCHEMA).csv(f"{BRONZE}/mlco2/impact.csv")
+    df_renamed = (df_raw.withColumnRenamed("providerName", "provider_name")
+                        .withColumnRenamed("offsetRatio", "offset_ratio")
+                        .withColumnRenamed("regionName", "region_name")
+                        .withColumnRenamed("PUE", "pue")
+                        .withColumnRenamed("PUE source", "pue_source"))
+    df_clean = df_renamed.filter(F.col("region").isNotNull())
+    df = _log_dropped(df_renamed, df_clean, "mlco2/impact")
+    result: WriteResult = write_to_silver(df, "mlco2/impact")
+    return df, result.rows_written
+
+def process_mlco2_gpus(spark: SparkSession) -> tuple[DataFrame, int]:
+    df_raw = spark.read.option("header", "true").schema(MLCO2_GPUS_SCHEMA).csv(f"{BRONZE}/mlco2/gpus.csv")
+    df_renamed = (df_raw.withColumnRenamed("name", "gpu_model")
+                        .withColumnRenamed("TFLOPS32", "tflops_32")
+                        .withColumnRenamed(" TFLOPS16", "tflops_16")
+                        .withColumnRenamed("GFLOPS32/W", "gflops_32_per_w")
+                        .withColumnRenamed("GFLOPS16/W", "gflops_16_per_w"))
+    df_clean = df_renamed.filter(F.col("gpu_model").isNotNull())
+    df = _log_dropped(df_renamed, df_clean, "mlco2/gpus")
+    result: WriteResult = write_to_silver(df, "mlco2/gpus")
+    return df, result.rows_written
+
+
+# ---------------------------------------------------------------------------
 # 7. OWID — Energy Data
 # ---------------------------------------------------------------------------
 
@@ -739,6 +780,9 @@ def main():
         ("reference/zones_dimension",                 lambda: process_observed_zones_dimension(spark)),
         ("global_petrol_prices",                      lambda: process_global_petrol_prices(spark)),
         ("mlco2/yearly_averages",                     lambda: process_mlco2_yearly_avg(spark)),
+        ("mlco2/instances",                           lambda: process_mlco2_instances(spark)),
+        ("mlco2/impact",                              lambda: process_mlco2_impact(spark)),
+        ("mlco2/gpus",                                lambda: process_mlco2_gpus(spark)),
         ("owid",                                      lambda: process_owid(spark)),
         ("reference/ec2_pricing",                     lambda: process_ec2_pricing(spark)),
         ("reference/geo_cloud_mapping",               lambda: process_geo_cloud_mapping(spark)),
