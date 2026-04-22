@@ -62,6 +62,11 @@ try:
         MLCO2_INSTANCES_SCHEMA,
         MLCO2_IMPACT_SCHEMA,
         MLCO2_GPUS_SCHEMA,
+        WORLD_BANK_ICT_SCHEMA,
+        GEO_CLOUD_MAPPING_SCHEMA,
+        GLOBAL_PETROL_PRICES_SCHEMA,
+        OWID_ENERGY_SCHEMA,
+        WORLD_BANK_METADATA_SCHEMA,
     )
     from writer import WriteResult, write_to_silver
 except ImportError:
@@ -78,6 +83,11 @@ except ImportError:
         MLCO2_INSTANCES_SCHEMA,
         MLCO2_IMPACT_SCHEMA,
         MLCO2_GPUS_SCHEMA,
+        WORLD_BANK_ICT_SCHEMA,
+        GEO_CLOUD_MAPPING_SCHEMA,
+        GLOBAL_PETROL_PRICES_SCHEMA,
+        OWID_ENERGY_SCHEMA,
+        WORLD_BANK_METADATA_SCHEMA,
     )
     from writer import WriteResult, write_to_silver
 
@@ -426,22 +436,8 @@ def process_global_petrol_prices(spark: SparkSession) -> tuple[DataFrame, int]:
     df = (
         spark.read
         .option("header", "true")
-        .option("inferSchema", "false")
+        .schema(GLOBAL_PETROL_PRICES_SCHEMA)
         .csv(bronze_path)
-        # Renombrar a snake_case
-        .withColumnRenamed("Country", "country")
-        .withColumn(
-            "residential_usd_per_kwh",
-            F.col("`Residential electricity rate USD per kWh (2023-2026 average)`").cast(DoubleType())
-        )
-        .withColumn(
-            "business_usd_per_kwh",
-            F.col("`Business electricity rate USD per kWh (2023-2026 average)`").cast(DoubleType())
-        )
-        .drop(
-            "Residential electricity rate USD per kWh (2023-2026 average)",
-            "Business electricity rate USD per kWh (2023-2026 average)"
-        )
     )
 
     # --- Estacionalidad simulada ---
@@ -466,7 +462,7 @@ def process_global_petrol_prices(spark: SparkSession) -> tuple[DataFrame, int]:
         F.round(F.col("residential_usd_per_kwh") * seasonal_factor, 4)
     )
 
-    result: WriteResult = write_to_silver(df, "global_petrol_prices")
+    result = write_to_silver(df, "global_petrol_prices")
     return df, result.rows_written
 
 
@@ -532,39 +528,26 @@ def process_mlco2_gpus(spark: SparkSession) -> tuple[DataFrame, int]:
 def process_owid(spark: SparkSession) -> tuple[DataFrame, int]:
     bronze_path = f"{BRONZE}/owid/owid-energy-data.csv"
 
-    # Leemos todas las columnas como string primero (130 cols) luego casteamos
+    # solo las columnas relevantes, ignorando el resto de las 130 columnas originales.
     df_raw = (
         spark.read
         .option("header", "true")
-        .option("inferSchema", "false")
+        .schema(OWID_ENERGY_SCHEMA)
         .csv(bronze_path)
     )
 
-    # Aplicar cast para las columnas clave del esquema Silver
-    numeric_cols = [
-        "population", "gdp", "carbon_intensity_elec", "electricity_demand",
-        "electricity_generation", "renewables_share_elec", "fossil_share_elec",
-        "low_carbon_share_elec", "greenhouse_gas_emissions", "solar_share_elec",
-        "wind_share_elec", "hydro_share_elec", "nuclear_share_elec",
-        "coal_share_elec", "gas_share_elec", "oil_share_elec",
-        "primary_energy_consumption", "energy_per_capita", "energy_per_gdp",
+    select_exprs = [
+        F.col(field.name).cast(field.dataType).alias(field.name)
+        for field in OWID_ENERGY_SCHEMA.fields
     ]
-
-    df_full = df_raw.withColumn("year", F.col("year").cast(IntegerType()))
-    for c in numeric_cols:
-        if c in df_full.columns:
-            df_full = df_full.withColumn(c, F.col(c).cast(DoubleType()))
-
-    # Selección de columnas Silver
-    keep = ["country", "year", "iso_code"] + numeric_cols
-    df_selected = df_full.select([c for c in keep if c in df_full.columns])
+    df_casted = df_raw.select(*select_exprs)
 
     # ── SELF-HEALING: Filtros de calidad ─────────────────────────────────────
     # 1. year no nulo (clave de partición)
     # 2. country no nulo y no vacío (clave de cruce con otras tablas)
     # 3. iso_code no nulo (inyectado ~3% por stress test)
     # 4. carbon_intensity_elec >= 0 cuando presente (negativo = corrupto)
-    df_clean = df_selected.filter(
+    df_clean = df_casted.filter(
         F.col("year").isNotNull() &
         F.col("country").isNotNull() & (F.trim(F.col("country")) != "") &
         # F.col("iso_code").isNotNull() &
@@ -573,7 +556,7 @@ def process_owid(spark: SparkSession) -> tuple[DataFrame, int]:
             (F.col("carbon_intensity_elec") >= 0)
         )
     )
-    df = _log_dropped(df_selected, df_clean, "owid")
+    df = _log_dropped(df_raw, df_clean, "owid")
 
     result: WriteResult = write_to_silver(df, "owid")
     return df, result.rows_written
@@ -608,7 +591,7 @@ def process_geo_cloud_mapping(spark: SparkSession) -> tuple[DataFrame, int]:
     df_raw = (
         spark.read
         .option("header", "true")
-        .option("inferSchema", "true")
+        .schema(GEO_CLOUD_MAPPING_SCHEMA)
         .csv(bronze_path)
     )
 
@@ -682,15 +665,16 @@ def process_world_bank(spark: SparkSession) -> tuple[DataFrame, int]:
     import boto3, io
 
     bronze_key = "world_bank/API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv"
+    temp_s3_key = "world_bank/.temp/temp_processed_ict.csv"
 
-    # Leer con skiprows desde S3 vía boto3 (no soportado nativamente en Spark CSV)
+    # Leer con skiprows desde S3
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=BRONZE_BUCKET, Key=bronze_key)
     body = obj["Body"].read()
 
     pdf = pd.read_csv(io.BytesIO(body), skiprows=4, dtype=str)
 
-    # Columnas de año: son las que se pueden parsear como entero en [1960,2025]
+    # Columnas de año
     year_cols = [c for c in pdf.columns if c.strip().isdigit()
                  and 1960 <= int(c.strip()) <= 2025]
 
@@ -713,14 +697,32 @@ def process_world_bank(spark: SparkSession) -> tuple[DataFrame, int]:
     pdf_long["ict_exports_usd"] = pd.to_numeric(pdf_long["ict_exports_usd"], errors="coerce")
     pdf_long = pdf_long.dropna(subset=["ict_exports_usd"])
 
-    # Convertir a Spark DF — usar el parámetro spark recibido, no re-crear sesión
-    df = (
-        spark.createDataFrame(pdf_long)
-        .withColumn("year", F.col("year").cast(IntegerType()))
-    )
+    # Escribir en buffer y subir a S3
+    csv_buffer = io.StringIO()
+    pdf_long.to_csv(csv_buffer, index=False)
+    
+    # Subimos el CSV limpio temporalmente a S3
+    s3.put_object(Bucket=BRONZE_BUCKET, Key=temp_s3_key, Body=csv_buffer.getvalue())
 
-    result: WriteResult = write_to_silver(df, "world_bank/ict_exports")
-    return df, result.rows_written
+    try:
+        # Ahora TODOS los workers de Spark pueden ver el archivo
+        df = (
+            spark.read
+            .option("header", "true")
+            .schema(WORLD_BANK_ICT_SCHEMA)
+            .csv(f"s3a://{BRONZE_BUCKET}/{temp_s3_key}")
+        )
+
+        result = write_to_silver(df, "world_bank/ict_exports")
+        return df, result.rows_written
+
+    finally:
+        # Limpieza: Borramos el archivo temporal de S3 para no dejar basura
+        try:
+            s3.delete_object(Bucket=BRONZE_BUCKET, Key=temp_s3_key)
+            logger.info("[QA:world_bank/ict_exports] Archivo temporal S3 eliminado.")
+        except Exception as e:
+            logger.warning(f"No se pudo eliminar el temporal en S3: {e}")
 
 # ---------------------------------------------------------------------------
 # 12. World Bank Metadata (Tabla de Dimensión)
@@ -733,7 +735,7 @@ def process_world_bank_metadata(spark: SparkSession) -> tuple[DataFrame, int]:
     df_raw = (
         spark.read
         .option("header", "true")
-        .option("inferSchema", "false")
+        .schema(WORLD_BANK_METADATA_SCHEMA)
         .csv(bronze_path)
     )
 

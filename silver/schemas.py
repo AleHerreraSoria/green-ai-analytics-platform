@@ -220,9 +220,11 @@ USAGE_LOGS_SCHEMA = StructType([
 
 WORLD_BANK_ICT_SCHEMA = StructType([
     StructField("country_name",    StringType(),  nullable=True),
-    StructField("country_code",    StringType(),  nullable=False),
+    StructField("country_code",    StringType(),  nullable=True),
     StructField("indicator_name",  StringType(),  nullable=True),
     StructField("indicator_code",  StringType(),  nullable=True),
+    StructField("year",            IntegerType(), nullable=True),
+    StructField("ict_exports_usd", DoubleType(),  nullable=True),
     # Las columnas de año son dinámicas; se leen como string y se despivota.
 ])
 
@@ -286,7 +288,7 @@ MLCO2_GPUS_SCHEMA = StructType([
     StructField("type", StringType(), nullable=True),
     StructField("tdp_watts", IntegerType(), nullable=True),
     StructField("TFLOPS32", DoubleType(), nullable=True),
-    StructField(" TFLOPS16", DoubleType(), nullable=True),
+    StructField("TFLOPS16", DoubleType(), nullable=True),
     StructField("GFLOPS32/W", StringType(), nullable=True),
     StructField("GFLOPS16/W", StringType(), nullable=True),
     StructField("memory", StringType(), nullable=True),
