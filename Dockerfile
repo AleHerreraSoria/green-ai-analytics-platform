@@ -11,4 +11,4 @@ RUN apt-get update \
 
 USER airflow
 # Instalamos las librerías de Python para que ya estén listas al arrancar
-RUN pip install --no-cache-dir pandas pendulum requests pyspark
+RUN pip install --no-cache-dir pandas pendulum requests pyspark faker
