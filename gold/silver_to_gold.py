@@ -178,7 +178,6 @@ def build_dim_country() -> DataFrame:
             dim.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .save(f"{GOLD}/dim_country")
         )
 
@@ -255,7 +254,6 @@ def build_dim_region() -> DataFrame:
             dim.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .save(f"{GOLD}/dim_region")
         )
 
@@ -303,9 +301,14 @@ def build_dim_gpu_model() -> DataFrame:
         # ── 3. Normalizar nombres de columnas TFLOPS ──────────────────────────
         # El esquema bronze usa 'TFLOPS32' y ' TFLOPS16' (con espacio).
         # La capa Silver debería haberlos limpiado; se aplica alias defensivo.
-        tflops32_col: str = "TFLOPS32" if "TFLOPS32" in gpus.columns else "tflops32"
+        tflops32_col: str = (
+            "tflops_32" if "tflops_32" in gpus.columns
+            else "TFLOPS32" if "TFLOPS32" in gpus.columns
+            else "tflops32"
+        )
         tflops16_col: str = (
-            " TFLOPS16" if " TFLOPS16" in gpus.columns
+            "tflops_16" if "tflops_16" in gpus.columns
+            else " TFLOPS16" if " TFLOPS16" in gpus.columns
             else "TFLOPS16" if "TFLOPS16" in gpus.columns
             else "tflops16"
         )
@@ -326,7 +329,6 @@ def build_dim_gpu_model() -> DataFrame:
             dim.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .save(f"{GOLD}/dim_gpu_model")
         )
 
@@ -394,7 +396,6 @@ def build_dim_instance_type() -> DataFrame:
             dim.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .save(f"{GOLD}/dim_instance_type")
         )
 
@@ -458,7 +459,6 @@ def build_dim_electricity_price() -> DataFrame:
             dim.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .save(f"{GOLD}/dim_electricity_price")
         )
 
@@ -681,7 +681,6 @@ def build_fact_ai_compute_usage() -> DataFrame:
             fact.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .partitionBy("year", "month")
             .save(f"{GOLD}/fact_ai_compute_usage")
         )
@@ -778,10 +777,10 @@ def build_fact_carbon_intensity_hourly() -> DataFrame:
             F.col("month").cast(IntegerType()),
             F.col("hour").cast(IntegerType()),
             # Dimensión degenerada
-            F.col("emissionFactorType").cast(StringType()).alias("emission_factor_type"),
-            F.col("isEstimated").cast("boolean").alias("is_estimated"),
+            F.col("emission_factor_type").cast(StringType()).alias("emission_factor_type"),
+            F.col("is_estimated").cast("boolean").alias("is_estimated"),
             # Medida principal
-            F.col("carbonIntensity").cast(DoubleType()).alias("carbon_intensity_gco2eq_per_kwh"),
+            F.col("carbon_intensity").cast(DoubleType()).alias("carbon_intensity_gco2eq_per_kwh"),
         )
 
         # ── 5. Escribir en Gold ───────────────────────────────────────────────
@@ -789,7 +788,6 @@ def build_fact_carbon_intensity_hourly() -> DataFrame:
             fact.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .partitionBy("year", "month")
             .save(f"{GOLD}/fact_carbon_intensity_hourly")
         )
@@ -894,12 +892,18 @@ def build_fact_country_energy_annual() -> DataFrame:
             F.col("ict_exports_usd").cast(DoubleType()),
         )
 
-        # ── 6. Escribir en Gold particionado por año ──────────────────────────
+        # ── 6. Filtro de dominio temporal — sólo datos relevantes para IA ────────
+        # Descartamos años anteriores a 1990 (pre-era de cómputo masivo) y
+        # posteriores a 2030 (proyecciones fuera del horizonte de análisis).
+        fact = fact.filter(
+            (F.col("year") >= 1990) & (F.col("year") <= 2030)
+        )
+
+        # ── 7. Escribir en Gold particionado por año ──────────────────────────
         (
             fact.write
             .format("delta")
             .mode("overwrite")
-            .option("overwriteSchema", "true")
             .partitionBy("year")
             .save(f"{GOLD}/fact_country_energy_annual")
         )
