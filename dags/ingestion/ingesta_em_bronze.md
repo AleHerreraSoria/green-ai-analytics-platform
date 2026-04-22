@@ -12,7 +12,7 @@ Este DAG se encarga de la extracción automatizada de datos de intensidad de car
 El flujo de datos sigue los siguientes pasos:
 1. **Lectura de Configuración:** El DAG lee el archivo `geo_cloud_to_country_and_zones.csv` para identificar las zonas activas.
 2. **Generación Dinámica:** Se crea un `PythonOperator` independiente para cada zona encontrada.
-3. **Extracción (API):** Cada tarea consulta el endpoint `/carbon-intensity/past-range` para las últimas 24 horas.
+3. **Extracción (API):** Cada tarea consulta el endpoint `/carbon-intensity/history` para su zona.
 4. **Carga (S3):** Los datos se almacenan en formato JSON crudo en el bucket de destino.
 
 ## 3. Especificaciones Técnicas
@@ -31,9 +31,9 @@ Debido a las limitaciones de hardware de la instancia EC2, el DAG implementa con
     - `S3Hook`: Integración nativa con AWS.
 
 ## 4. Estructura de Destino (S3)
-Los archivos se guardan siguiendo el estándar **Hive-style partitioning**, lo que facilita la lectura posterior desde Spark o Athena:
+Los archivos se guardan en el prefijo canónico de Bronze para evitar duplicidad de estructuras y mantener compatibilidad con Silver:
 
-`s3://{bucket_bronze}/electricity_maps/zone={zona}/year={yyyy}/month={mm}/day={dd}/data.json`
+`s3://{bucket_bronze}/electricity_maps/carbon_intensity/history/zone={zona}/{run_slug}.json`
 
 ## 5. Configuración y Variables
 El DAG requiere que las siguientes **Airflow Variables** estén configuradas:
