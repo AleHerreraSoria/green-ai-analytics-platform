@@ -15,6 +15,7 @@ Variables de entorno requeridas:
     En desarrollo local se pueden definir en un archivo .env.
 """
 
+from __future__ import annotations
 import logging
 import os
 import sys
@@ -52,7 +53,7 @@ from pyspark.sql.types import DoubleType, IntegerType
 # con sys.path para mantener la estructura de ramas de feature/.
 try:
     # Ruta de empaquetado cloud (utils.zip añadido con --py-files)
-    from schemas import (
+    from scripts.schemas import (
         CARBON_INTENSITY_FLAT_SCHEMA,
         CARBON_INTENSITY_HISTORY_RAW_SCHEMA,
         EC2_PRICING_SCHEMA,
@@ -68,12 +69,12 @@ try:
         OWID_ENERGY_SCHEMA,
         WORLD_BANK_METADATA_SCHEMA,
     )
-    from writer import WriteResult, write_to_silver
+    from scripts.writer import WriteResult, write_to_silver
 except ImportError:
     # Ruta de desarrollo local (carpetas de feature/)
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "schema-definition-spark"))
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "storage-partitioning-silver"))
-    from schemas import (
+    from scripts.schemas import (
         CARBON_INTENSITY_FLAT_SCHEMA,
         CARBON_INTENSITY_HISTORY_RAW_SCHEMA,
         EC2_PRICING_SCHEMA,
@@ -89,7 +90,7 @@ except ImportError:
         OWID_ENERGY_SCHEMA,
         WORLD_BANK_METADATA_SCHEMA,
     )
-    from writer import WriteResult, write_to_silver
+    from scripts.writer import WriteResult, write_to_silver
 
 BRONZE_BUCKET = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
 SILVER_BUCKET = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
