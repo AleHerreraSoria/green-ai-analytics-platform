@@ -18,6 +18,7 @@ Uso:
     python validations.py --fail     # sale con código 1 si algún check falla
 """
 
+from __future__ import annotations
 import logging
 import os
 import sys

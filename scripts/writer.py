@@ -14,6 +14,7 @@ No contiene lógica de transformación. Se importa desde bronze_to_silver.py
 y puede ser reutilizado por cualquier job Silver futuro.
 """
 
+from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
