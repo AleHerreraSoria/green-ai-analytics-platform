@@ -1,0 +1,85 @@
+name: Deploy to EC2 by folder
+
+on:
+  push:
+    branches: ["main", "dev"]
+    paths:
+      - "airflow/**"
+      - "spark/**"
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      airflow: ${{ steps.filter.outputs.airflow }}
+      spark: ${{ steps.filter.outputs.spark }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed folders
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            airflow:
+              - 'airflow/**'
+            spark:
+              - 'spark/**'
+
+  deploy-airflow:
+    name: Deploy airflow folder
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.airflow == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure target folder exists
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.AIRFLOW_HOST }}
+          username: ${{ secrets.AIRFLOW_USER }}
+          key: ${{ secrets.AIRFLOW_SSH_KEY }}
+          script: mkdir -p "${{ secrets.AIRFLOW_TARGET_PATH }}"
+
+      - name: Upload airflow folder
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.AIRFLOW_HOST }}
+          username: ${{ secrets.AIRFLOW_USER }}
+          key: ${{ secrets.AIRFLOW_SSH_KEY }}
+          source: "airflow/*"
+          target: ${{ secrets.AIRFLOW_TARGET_PATH }}
+          overwrite: true
+          strip_components: 1
+
+  deploy-spark:
+    name: Deploy spark folder
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.spark == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure target folder exists
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SPARK_HOST }}
+          username: ${{ secrets.SPARK_USER }}
+          key: ${{ secrets.SPARK_SSH_KEY }}
+          script: mkdir -p "${{ secrets.SPARK_TARGET_PATH }}"
+
+      - name: Upload spark folder
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SPARK_HOST }}
+          username: ${{ secrets.SPARK_USER }}
+          key: ${{ secrets.SPARK_SSH_KEY }}
+          source: "spark/*"
+          target: ${{ secrets.SPARK_TARGET_PATH }}
+          overwrite: true
+          strip_components: 1
