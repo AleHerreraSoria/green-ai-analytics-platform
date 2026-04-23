@@ -48,11 +48,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("green-ai.gold.validations")
 
+
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
 # =============================================================================
 # Constantes
 # =============================================================================
 
-GOLD_BUCKET: str = os.getenv("S3_GOLD_BUCKET", "green-ai-pf-gold-a0e96d06")
+GOLD_BUCKET: str = require_env("S3_GOLD_BUCKET")
 GOLD: str        = f"s3a://{GOLD_BUCKET}"
 
 # Tablas Gold completas del modelo dimensional
@@ -589,11 +596,9 @@ def _get_or_create_spark() -> SparkSession:
             "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
             "software.amazon.awssdk:bundle:2.20.18",
         )
-        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID", ""))
-        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY", ""))
         .config(
             "spark.hadoop.fs.s3a.aws.credentials.provider",
-            "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
         )
         .config("spark.hadoop.fs.s3a.connection.timeout",           "60000")
         .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")

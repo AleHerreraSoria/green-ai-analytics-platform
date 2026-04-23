@@ -32,6 +32,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("green-ai.validations")
 
+
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
 # ── Dependencias opcionales de desarrollo ──────────────────────────────────
 # En producción las vars de entorno son inyectadas por Airflow / IAM Role.
 try:
@@ -43,8 +50,8 @@ except ImportError:
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
-SILVER_BUCKET = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
-BRONZE_BUCKET = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
+SILVER_BUCKET = require_env("S3_SILVER_BUCKET")
+BRONZE_BUCKET = require_env("S3_BRONZE_BUCKET")
 SILVER = f"s3a://{SILVER_BUCKET}"
 BRONZE = f"s3a://{BRONZE_BUCKET}"
 
@@ -381,9 +388,10 @@ def main(fail_on_error: bool = False):
                 "org.apache.hadoop:hadoop-aws:3.3.4,"
                 "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
                 "software.amazon.awssdk:bundle:2.20.18")
-        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID"))
-        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY"))
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.EnvironmentVariableCredentialsProvider")
+        .config(
+            "spark.hadoop.fs.s3a.aws.credentials.provider",
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        )
         # Fix for Hadoop 3.3.4 "60s" NumberFormatException bug
         .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
         .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")

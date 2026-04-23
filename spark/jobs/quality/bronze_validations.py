@@ -31,7 +31,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("green-ai.bronze.validations")
 
-BRONZE_BUCKET = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
+
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
+
+BRONZE_BUCKET = require_env("S3_BRONZE_BUCKET")
 
 
 @dataclass

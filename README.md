@@ -14,7 +14,7 @@ Plataforma de datos orientada a una ONG para analizar el **impacto ambiental y e
 |------|----------------|
 | **Infraestructura (AWS)** | Terraform: tres buckets S3 (Bronze, Silver, Gold), grupo de seguridad, instancia EC2 con IP elástica. Backend de estado en S3 (ver `infrastructure/terraform/providers.tf`). |
 | **Capa Bronze (ingesta y datos locales)** | Scripts Python para logs sintéticos, ingesta Electricity Maps, referencia de precios EC2 aproximados y carga a S3. CSV de referencia y logs bajo `bronze/`. Documentación en `docs/`. |
-| **Orquestación** | `docker-compose.yml` con el stack oficial de **Apache Airflow 2.8** (Celery + Postgres + Redis) para desarrollo local. **No hay DAGs versionados aún** en este repo (la carpeta `dags/` es la que monta Compose cuando exista). |
+| **Orquestación** | Stack de Airflow en `airflow/docker/docker-compose.yml` con DAGs versionados en `airflow/dags/` para pipeline E2E y DAGs de soporte Silver/Gold. |
 | **Silver / Gold** | Estructura de buckets preparada; transformaciones Medallion (PySpark, tablas analíticas) **pendientes**. |
 | **Visualización** | **Pendiente** (p. ej. Power BI o Streamlit según la propuesta). |
 
@@ -57,12 +57,16 @@ Contrato de columnas y mapeos: `docs/DICCIONARIO_DE_DATOS.md`. Operativa Bronze:
    pip install -r requirements.txt
    ```
 
-2. Crear un archivo **`.env`** en la raíz (no se versiona). Ejemplo mínimo:
+2. Crear un archivo **`.env`** en la raíz (no se versiona) usando `.env.example` como contrato:
 
    ```env
+   APP_ENV=dev
    ELECTRICITY_MAPS_TOKEN=tu_token
-   AWS_S3_BUCKET=nombre-del-bucket-bronze
-   # Opcional: AWS_PROFILE, AWS_DEFAULT_REGION
+   S3_BRONZE_BUCKET=tu_bucket_bronze
+   S3_SILVER_BUCKET=tu_bucket_silver
+   S3_GOLD_BUCKET=tu_bucket_gold
+   AIRFLOW_AWS_CONN_ID=aws_default
+   SPARK_SSH_CONN_ID=spark_ssh
    ```
 
 3. Colocar los CSV externos bajo **`data/`** según las rutas esperadas por `scripts/upload_bronze_to_s3.py` y por el generador de logs (MLCO2). La carpeta `data/` está en `.gitignore`.
@@ -102,13 +106,13 @@ Inicializar y aplicar según tu backend y variables (por ejemplo `terraform init
 
 ## Airflow (local)
 
-Desde la raíz del proyecto (donde está `docker-compose.yml`):
+Desde la raíz del proyecto (compose vive en `airflow/docker/docker-compose.yml`):
 
 ```bash
-docker compose up -d
+docker compose --env-file .env -f airflow/docker/docker-compose.yml up -d
 ```
 
-Interfaz web por defecto en el puerto **8080** (usuario/contraseña según variables de entorno de Compose; ver comentarios al inicio del YAML). Cuando existan DAGs en `./dags`, quedarán montados en el contenedor.
+Interfaz web en el puerto **8080** (usuario/contraseña tomados desde `_AIRFLOW_WWW_USER_USERNAME` y `_AIRFLOW_WWW_USER_PASSWORD`). Los DAGs reales están en `airflow/dags/`.
 
 ---
 
@@ -120,7 +124,7 @@ green-ai-analytics-platform/
 ├── docs/                   # Diccionario de datos, Bronze, preguntas de negocio, decisiones
 ├── infrastructure/terraform/
 ├── scripts/                # Ingesta, generación y subida a S3
-├── docker-compose.yml      # Stack Airflow para desarrollo
+├── airflow/docker/docker-compose.yml
 └── requirements.txt
 ```
 
@@ -132,6 +136,29 @@ green-ai-analytics-platform/
 - `docs/DOCUMENTACION_CAPA_BRONZE.md` — organización del bucket y flujos de ingesta.
 - `docs/PREGUNTAS_DE_NEGOCIO.md` — KPIs y análisis previstos.
 - `docs/technical-decisions.md` — decisiones técnicas del equipo.
+
+---
+
+## Contrato operativo mínimo
+
+- Docker daemon activo antes de levantar Airflow.
+- Conexiones Airflow creadas:
+  - `aws_default` para hooks S3.
+  - `spark_ssh` para ejecución remota de Spark jobs.
+- Datos base presentes en Bronze S3 (MLCO2, OWID, World Bank, referencia EC2, Electricity Maps) para que el pipeline E2E sea reproducible.
+- Variables críticas sin fallback: si falta alguna requerida en `.env`, los DAGs/jobs deben fallar rápido.
+
+---
+
+## Entornos
+
+Gestiona variables por entorno con archivos separados y nunca compartas secretos reales:
+
+- `.env.dev`
+- `.env.staging`
+- `.env.prod`
+
+Puedes copiar `.env.example` como base y completar valores por entorno.
 
 ---
 

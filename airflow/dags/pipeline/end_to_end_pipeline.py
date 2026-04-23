@@ -4,40 +4,30 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.ssh.operators.ssh import SSHOperator
 import pendulum
 import os
-
-# ==========================================================
-# CONFIGURACIÓN DE RUTAS Y CONSTANTES
-# ==========================================================
-SCRIPTS_PATH = "/opt/airflow/scripts"
-DATA_PATH = "/opt/airflow/data"
-MLCO2_LOCAL_DIR = f"{DATA_PATH}/Code_Carbon"
-
-# Buckets de S3
-S3_BRONZE = "green-ai-pf-bronze-a0e96d06"
-S3_SILVER = "green-ai-pf-silver-a0e96d06"
-S3_GOLD = "green-ai-pf-gold-a0e96d06"
-
-SPARK_SSH_CONN_ID = "spark_ssh"
-SPARK_REPO_PATH = os.getenv("SPARK_REPO_PATH", "/opt/green-ai-analytics-platform/spark")
-
-# ==========================================================
-# FUNCIONES DE APOYO
-# ==========================================================
+from config.settings import AWS_CONN_ID
+from config.settings import DATA_PATH
+from config.settings import MLCO2_LOCAL_DIR
+from config.settings import S3_BRONZE_BUCKET
+from config.settings import S3_GOLD_BUCKET
+from config.settings import S3_SILVER_BUCKET
+from config.settings import SCRIPTS_PATH
+from config.settings import SPARK_REPO_PATH
+from config.settings import SPARK_SSH_CONN_ID
 
 def download_mlco2_from_s3():
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-    hook = S3Hook(aws_conn_id='aws_default')
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
     client = hook.get_conn()
     files = ["gpus.csv", "impact.csv", "instances.csv", "2021-10-27yearly_averages.csv"]
     os.makedirs(MLCO2_LOCAL_DIR, exist_ok=True)
     for f in files:
         dest = os.path.join(MLCO2_LOCAL_DIR, f)
-        client.download_file(S3_BRONZE, f"mlco2/{f}", dest)
+        client.download_file(S3_BRONZE_BUCKET, f"mlco2/{f}", dest)
         print(f"✅ {f} (MLCO2) descargado.")
 
 def sync_external_references():
     from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-    hook = S3Hook(aws_conn_id='aws_default')
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
     client = hook.get_conn()
     external_files = {
         "global_petrol_prices/electricity_prices_by_country_2023_2026_avg.csv": "electricity_prices.csv",
@@ -50,7 +40,7 @@ def sync_external_references():
     os.makedirs(DATA_PATH, exist_ok=True)
     for s3_path, local_name in external_files.items():
         dest = os.path.join(DATA_PATH, local_name)
-        client.download_file(S3_BRONZE, s3_path, dest)
+        client.download_file(S3_BRONZE_BUCKET, s3_path, dest)
         print(f"✅ {local_name} sincronizado.")
 
 # ==========================================================
@@ -95,12 +85,12 @@ with DAG(
             f"cp {DATA_PATH}/geo_cloud_to_country_and_zones.csv /opt/airflow/bronze/reference/ && "
             f"python3 {SCRIPTS_PATH}/ingest_electricity_maps.py --mode latest"
         ),
-        env={**os.environ, 'AWS_S3_BUCKET': S3_BRONZE}
+        env={**os.environ, 'AWS_S3_BUCKET': S3_BRONZE_BUCKET}
     )
 
     task_upload_s3 = BashOperator(
         task_id='upload_all_to_s3_bronze',
-        bash_command=f"python3 {SCRIPTS_PATH}/upload_bronze_to_s3.py --bucket {S3_BRONZE}"
+        bash_command=f"python3 {SCRIPTS_PATH}/upload_bronze_to_s3.py --bucket {S3_BRONZE_BUCKET}"
     )
 
     task_bronze_validations_remote = SSHOperator(
@@ -108,7 +98,7 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_BRONZE_BUCKET={S3_BRONZE} && "
+            f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} && "
             "spark-submit jobs/quality/bronze_validations.py"
         ),
         cmd_timeout=1800,
@@ -120,7 +110,7 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_BRONZE_BUCKET={S3_BRONZE} S3_SILVER_BUCKET={S3_SILVER} && "
+            f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} S3_SILVER_BUCKET={S3_SILVER_BUCKET} && "
             "spark-submit jobs/etl/bronze_to_silver.py"
         ),
         cmd_timeout=3600,
@@ -131,7 +121,7 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_BRONZE_BUCKET={S3_BRONZE} S3_SILVER_BUCKET={S3_SILVER} && "
+            f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} S3_SILVER_BUCKET={S3_SILVER_BUCKET} && "
             "spark-submit jobs/quality/silver_validations.py"
         ),
         cmd_timeout=3600,
@@ -142,7 +132,7 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_BRONZE_BUCKET={S3_BRONZE} S3_SILVER_BUCKET={S3_SILVER} && "
+            f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} S3_SILVER_BUCKET={S3_SILVER_BUCKET} && "
             "spark-submit jobs/quality/audit.py"
         ),
         cmd_timeout=3600,
@@ -154,7 +144,7 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_SILVER_BUCKET={S3_SILVER} S3_GOLD_BUCKET={S3_GOLD} && "
+            f"export S3_SILVER_BUCKET={S3_SILVER_BUCKET} S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
             "spark-submit jobs/etl/silver_to_gold.py"
         ),
         cmd_timeout=3600,
@@ -165,7 +155,7 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_GOLD_BUCKET={S3_GOLD} && "
+            f"export S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
             "spark-submit jobs/quality/gold_validations.py --fail"
         ),
         cmd_timeout=3600,

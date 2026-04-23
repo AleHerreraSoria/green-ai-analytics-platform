@@ -68,12 +68,19 @@ logging.basicConfig(
 logger = logging.getLogger("green-ai.audit")
 
 
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
+
 # ===========================================================================
 # 1. CONFIGURACIÓN CENTRALIZADA
 # ===========================================================================
 
-BRONZE_BUCKET: str = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
-SILVER_BUCKET: str = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
+BRONZE_BUCKET: str = require_env("S3_BRONZE_BUCKET")
+SILVER_BUCKET: str = require_env("S3_SILVER_BUCKET")
 BRONZE: str = f"s3a://{BRONZE_BUCKET}"
 SILVER: str = f"s3a://{SILVER_BUCKET}"
 
@@ -666,11 +673,8 @@ def _build_spark() -> SparkSession:
                 "org.apache.hadoop:hadoop-aws:3.3.4,"
                 "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
                 "software.amazon.awssdk:bundle:2.20.18")
-        # Credenciales S3
-        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID", ""))
-        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY", ""))
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
-                "com.amazonaws.auth.EnvironmentVariableCredentialsProvider")
+                "com.amazonaws.auth.DefaultAWSCredentialsProviderChain")
         # Fix Hadoop 3.3.4 — timeouts como milisegundos (no sufijos "s")
         .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
         .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
