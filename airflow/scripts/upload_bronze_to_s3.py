@@ -65,6 +65,15 @@ def _prefix_for_key(s3_key: str) -> str:
     return s3_key.split("/")[0]
 
 
+def _resolve_bucket(cli_bucket: str | None) -> str:
+    bucket = cli_bucket or os.environ.get("S3_BRONZE_BUCKET")
+    if bucket is None or bucket.strip() == "":
+        raise ValueError(
+            "Missing bucket. Use --bucket or set required env var S3_BRONZE_BUCKET."
+        )
+    return bucket
+
+
 def main() -> int:
     root = _repo_root()
     if load_dotenv is not None:
@@ -73,8 +82,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Sube CSV del proyecto al bucket S3 Bronze.")
     parser.add_argument(
         "--bucket",
-        default=os.environ.get("AWS_S3_BUCKET", "green-ai-pf-bronze-a0e96d06"),
-        help="Nombre del bucket (override a env AWS_S3_BUCKET).",
+        default=None,
+        help="Nombre del bucket (override a env S3_BRONZE_BUCKET).",
     )
     parser.add_argument(
         "--only",
@@ -93,6 +102,12 @@ def main() -> int:
         help="Perfil de AWS CLI (override a env AWS_PROFILE).",
     )
     args = parser.parse_args()
+    try:
+        bucket = _resolve_bucket(args.bucket)
+    except ValueError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
+
     session = boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
     s3 = session.client("s3")
 
@@ -111,13 +126,13 @@ def main() -> int:
             print(f"[omitido] no existe: {rel}", file=sys.stderr)
             skipped += 1
             continue
-        uri = f"s3://{args.bucket}/{key}"
+        uri = f"s3://{bucket}/{key}"
         if args.dry_run:
             print(f"[dry-run] {path} -> {uri}")
             uploaded += 1
             continue
         try:
-            s3.upload_file(str(path), args.bucket, key)
+            s3.upload_file(str(path), bucket, key)
             print(f"OK {uri}")
             uploaded += 1
         except (ClientError, BotoCoreError, OSError) as e:
