@@ -2,7 +2,7 @@ name: Deploy to EC2 by folder
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
     paths:
       - "airflow/**"
       - "spark/**"
