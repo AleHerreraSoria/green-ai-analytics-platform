@@ -40,6 +40,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("green-ai.gold")
 
+
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
 # =============================================================================
 # Dependencias opcionales de desarrollo
 # =============================================================================
@@ -54,8 +61,8 @@ except ImportError:
 # Constantes de Infraestructura
 # =============================================================================
 
-SILVER_BUCKET: str = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
-GOLD_BUCKET: str   = os.getenv("S3_GOLD_BUCKET",   "green-ai-pf-gold-a0e96d06")
+SILVER_BUCKET: str = require_env("S3_SILVER_BUCKET")
+GOLD_BUCKET: str = require_env("S3_GOLD_BUCKET")
 
 SILVER: str = f"s3a://{SILVER_BUCKET}"
 GOLD: str   = f"s3a://{GOLD_BUCKET}"
@@ -87,12 +94,9 @@ spark: SparkSession = (
         "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
         "software.amazon.awssdk:bundle:2.20.18",
     )
-    # ── Credenciales AWS ─────────────────────────────────────────────────────
-    .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID", ""))
-    .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY", ""))
     .config(
         "spark.hadoop.fs.s3a.aws.credentials.provider",
-        "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",
+        "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
     )
     # ── Fix Hadoop 3.3.4 «60s» NumberFormatException ─────────────────────────
     .config("spark.hadoop.fs.s3a.connection.timeout",           "60000")

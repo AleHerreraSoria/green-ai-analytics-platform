@@ -29,6 +29,13 @@ from pyspark.sql import functions as F
 logger = logging.getLogger("green-ai.writer")
 
 
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Estrategias de particionado por tipo de dataset
 # ---------------------------------------------------------------------------
@@ -224,7 +231,7 @@ def write_to_silver(
     """
     Wrapper funcional sobre SilverWriter para uso directo en bronze_to_silver.py.
     """
-    bucket = silver_bucket or os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
+    bucket = silver_bucket or require_env("S3_SILVER_BUCKET")
     writer = SilverWriter(silver_bucket=bucket, mode=mode)
     return writer.write(df, dataset_key)
 
