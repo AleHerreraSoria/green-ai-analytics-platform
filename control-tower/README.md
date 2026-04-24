@@ -27,5 +27,16 @@ Para mantener la coherencia y profesionalismo de la interfaz, todos los miembros
 ### 5. Documentación Interna
 * Cada nueva página añadida debe incluir un breve comentario al inicio explicando qué pregunta de negocio resuelve o qué parte del pipeline está monitoreando.
 
+### 6. Pipeline Live (Airflow Cloud)
+* La vista live está en `pages/1_Pipeline_Live.py`.
+* Variables requeridas (ver `control-tower/.env.example`):
+  * `AIRFLOW_API_BASE_URL`
+  * `AIRFLOW_API_USERNAME` / `AIRFLOW_API_PASSWORD` o `AIRFLOW_API_TOKEN`
+  * `PIPELINE_DAG_ID`
+  * `AIRFLOW_POLL_INTERVAL_SECONDS`
+  * `STREAM_HEARTBEAT_SECONDS`
+* `control-tower` asume despliegue en una instancia separada y conecta con Airflow por API HTTPS.
+* Si el stream no es estable, la página degrada automáticamente a modo polling sin romper la UI.
+
 ---
 *Este documento es dinámico. Si encuentras una mejor forma de optimizar la interfaz, propón el cambio en el canal de comunicación del equipo antes de implementarlo.*
