@@ -1,6 +1,7 @@
 from .settings import AWS_CONN_ID
 from .settings import DATA_PATH
 from .settings import MLCO2_LOCAL_DIR
+from .settings import S3_SOURCES_BUCKET
 from .settings import S3_BRONZE_BUCKET
 from .settings import S3_GOLD_BUCKET
 from .settings import S3_SILVER_BUCKET

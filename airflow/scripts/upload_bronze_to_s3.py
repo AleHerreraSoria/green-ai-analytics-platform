@@ -1,5 +1,6 @@
 """
-Sube a S3 los CSV locales alineados a los prefijos del bucket (usage_logs, mlco2, owid, etc.).
+Sube a S3 los CSV locales alineados a los prefijos del bucket (mlco2, owid, reference, etc.).
+Los usage_logs se suben desde el generador directo a S3 (`generate_synthetic_usage_logs.py --s3-bucket`).
 
 Variables: se lee `.env` en la raíz del repo (python-dotenv) si está instalado.
 Bucket: AWS_S3_BUCKET; región: AWS_DEFAULT_REGION; perfil: AWS_PROFILE o --profile.
@@ -40,7 +41,6 @@ DEFAULT_UPLOADS: list[tuple[str, str]] = [
         "bronze/reference/aws_ec2_on_demand_usd_per_hour.csv",
         "reference/aws_ec2_on_demand_usd_per_hour.csv",
     ),
-    ("bronze/usage_logs/usage_logs.csv", "usage_logs/usage_logs.csv"),
     ("data/Code_Carbon/gpus.csv", "mlco2/gpus.csv"),
     ("data/Code_Carbon/instances.csv", "mlco2/instances.csv"),
     ("data/Code_Carbon/impact.csv", "mlco2/impact.csv"),
@@ -87,7 +87,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--only",
-        choices=("reference", "usage_logs", "mlco2", "owid", "global_petrol_prices", "world_bank"),
+        choices=("reference", "mlco2", "owid", "global_petrol_prices", "world_bank"),
         default=None,
         help="Solo subir un prefijo/dataset.",
     )
