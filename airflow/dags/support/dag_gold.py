@@ -4,6 +4,8 @@ import pendulum
 from config.settings import S3_GOLD_BUCKET
 from config.settings import S3_SILVER_BUCKET
 from config.settings import SPARK_REPO_PATH
+from config.settings import SPARK_SUBMIT_BIN
+from config.settings import SPARK_SUBMIT_EXTRA_ARGS
 from config.settings import SPARK_SSH_CONN_ID
 
 
@@ -22,7 +24,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_SILVER_BUCKET={S3_SILVER_BUCKET} S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
-            "spark-submit jobs/etl/silver_to_gold.py"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/etl/silver_to_gold.py"
         ),
         cmd_timeout=7200,
     )
@@ -33,7 +35,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
-            "spark-submit jobs/quality/gold_validations.py --fail"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/gold_validations.py --fail"
         ),
         cmd_timeout=3600,
     )
