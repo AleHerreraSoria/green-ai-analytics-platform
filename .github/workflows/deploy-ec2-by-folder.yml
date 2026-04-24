@@ -14,6 +14,7 @@ jobs:
     outputs:
       airflow: ${{ steps.filter.outputs.airflow }}
       spark: ${{ steps.filter.outputs.spark }}
+      control_tower: ${{ steps.filter.outputs.control_tower }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,6 +28,8 @@ jobs:
               - 'airflow/**'
             spark:
               - 'spark/**'
+            control_tower:
+              - 'control-tower/**'
 
   deploy-airflow:
     name: Deploy airflow folder
@@ -81,5 +84,33 @@ jobs:
           key: ${{ secrets.SPARK_SSH_KEY }}
           source: "spark/*"
           target: ${{ secrets.SPARK_TARGET_PATH }}
+          overwrite: true
+          strip_components: 1
+
+  deploy-control-tower:
+    name: Deploy control-tower folder
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.control_tower == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure target folder exists
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CONTROL_TOWER_HOST }}
+          username: ${{ secrets.CONTROL_TOWER_USER }}
+          key: ${{ secrets.CONTROL_TOWER_SSH_KEY }}
+          script: mkdir -p "${{ secrets.CONTROL_TOWER_TARGET_PATH }}"
+
+      - name: Upload control-tower folder
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.CONTROL_TOWER_HOST }}
+          username: ${{ secrets.CONTROL_TOWER_USER }}
+          key: ${{ secrets.CONTROL_TOWER_SSH_KEY }}
+          source: "control-tower/*"
+          target: ${{ secrets.CONTROL_TOWER_TARGET_PATH }}
           overwrite: true
           strip_components: 1

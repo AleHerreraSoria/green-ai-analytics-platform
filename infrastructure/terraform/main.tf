@@ -51,6 +51,42 @@ resource "aws_iam_user_group_membership" "team_membership" {
   groups   = [aws_iam_group.data_engineers.name]
 }
 
+# --- CONFIGURACIÓN PARA SERVING (DASHBOARD) ---
+# Requerimiento SCRUM-51: Acceso seguro para visualización
+resource "aws_iam_user" "dashboard_user" {
+  name          = "green-ai-dashboard-viewer"
+  force_destroy = true
+  tags          = { Role = "Serving" }
+}
+
+resource "aws_iam_policy" "gold_read_only" {
+  name        = "GreenAIGoldReadOnly"
+  description = "Acceso restringido para herramientas de BI a la capa Gold"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = ["s3:GetObject", "s3:ListBucket"]
+        Effect   = "Allow"
+        Resource = [
+          aws_s3_bucket.gold_layer.arn,
+          "${aws_s3_bucket.gold_layer.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_user_policy_attachment" "dashboard_attach" {
+  user       = aws_iam_user.dashboard_user.name
+  policy_arn = aws_iam_policy.gold_read_only.arn
+}
+
+resource "aws_iam_access_key" "dashboard_keys" {
+  user = aws_iam_user.dashboard_user.name
+}
+
 # --- SEGURIDAD (Firewall) ---
 resource "aws_security_group" "green_ai_sg" {
   name        = "green-ai-platform-sg"
@@ -132,4 +168,14 @@ output "spark_public_ip"    { value = aws_eip.spark_eip.public_ip }
 output "team_passwords" {
   value     = { for u, p in aws_iam_user_login_profile.team_login : u => p.password }
   sensitive = true # Obligatorio para que Terraform acepte el plan
+}
+
+# Llaves para que José configure el Dashboard
+output "dashboard_access_key" {
+  value = aws_iam_access_key.dashboard_keys.id
+}
+
+output "dashboard_secret_key" {
+  value     = aws_iam_access_key.dashboard_keys.secret
+  sensitive = true
 }
