@@ -117,7 +117,7 @@ st.sidebar.caption(
 st.sidebar.divider()
 st.sidebar.markdown("**Navegación**")
 st.sidebar.info(
-    "Green AI Analytics Platform."
+    "Home Storytelling + página `Pipeline Live` para seguimiento en tiempo real."
 )
 
 hero = """
