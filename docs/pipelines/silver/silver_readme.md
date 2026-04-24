@@ -8,7 +8,7 @@ Bienvenido a la bitácora técnica y documentación principal del pipeline de da
 
 Todo nuestro flujo de datos comenzó con un ecosistema inicial de archivos Parquet y JSON crudos alojados en AWS S3. Para sentar las bases de la Capa Silver, el primer paso fue someter nuestra arquitectura a una ingeniería inversa metodológica. 
 
-Al cruzar el `DICCIONARIO_DE_DATOS.md` original con nuestros requerimientos en `PREGUNTAS_DE_NEGOCIO.md`, identificamos proactivamente tres "gaps" estructurales críticos que hubiesen generado deuda técnica y bloqueado el análisis en capas posteriores (Gold):
+Al cruzar el `../../references/data_dictionary.md` original con nuestros requerimientos en `../../architecture/business_questions.md`, identificamos proactivamente tres "gaps" estructurales críticos que hubiesen generado deuda técnica y bloqueado el análisis en capas posteriores (Gold):
 
 1. **Falta de un Catálogo Maestro de Geografías:** Observamos un desacople entre `region` en los logs cloud (ej. `aws-us-east-1`), `zone` en Electricity Maps y los códigos `ISO-3166` macroeconómicos. Evitamos el anti-patrón de aplicar hardcoding en Silver diseñando una tabla puente en Bronze para mapear *Cloud Region -> Grid Zone -> ISO Country Code*.
 2. **Ausencia de Precios Cloud Reales (Impacto TCO):** Para evaluar certeramente los costos de infraestructura de la ONG, el precio de red industrial era insuficiente. Abordamos la adición de un catálogo extra con los costos en USD/hora de instancias (EC2, GCP, etc.) permitiendo un cálculo genuino de _Total Cost of Ownership_.
