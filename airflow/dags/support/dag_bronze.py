@@ -4,6 +4,8 @@ from airflow.providers.ssh.operators.ssh import SSHOperator
 import pendulum
 from config.settings import S3_BRONZE_BUCKET
 from config.settings import SPARK_REPO_PATH
+from config.settings import SPARK_SUBMIT_BIN
+from config.settings import SPARK_SUBMIT_EXTRA_ARGS
 from config.settings import SPARK_SSH_CONN_ID
 
 
@@ -35,7 +37,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} && "
-            "spark-submit jobs/quality/bronze_validations.py"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/bronze_validations.py"
         ),
         cmd_timeout=1800,
     )

@@ -3,16 +3,17 @@ from airflow.utils.helpers import chain
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.providers.ssh.operators.ssh import SSHOperator
-import pendulum
 import os
+import pendulum
 from config.settings import AWS_CONN_ID
-from config.settings import DATA_PATH
 from config.settings import S3_BRONZE_BUCKET
 from config.settings import S3_GOLD_BUCKET
 from config.settings import S3_SILVER_BUCKET
 from config.settings import S3_SOURCES_BUCKET
 from config.settings import SCRIPTS_PATH
 from config.settings import SPARK_REPO_PATH
+from config.settings import SPARK_SUBMIT_BIN
+from config.settings import SPARK_SUBMIT_EXTRA_ARGS
 from config.settings import SPARK_SSH_CONN_ID
 
 
@@ -66,40 +67,6 @@ def copy_sources_bucket_to_bronze():
         )
         print(f"OK s3://{S3_SOURCES_BUCKET}/{src_key} -> s3://{S3_BRONZE_BUCKET}/{dest_key}")
 
-def sync_external_references():
-    from botocore.exceptions import ClientError
-    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-
-    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
-    client = hook.get_conn()
-    required_files = {
-        "global_petrol_prices/electricity_prices_by_country_2023_2026_avg.csv": "electricity_prices.csv",
-        "owid/owid-energy-data.csv": "owid-energy-data.csv",
-        "reference/geo_cloud_to_country_and_zones.csv": "geo_cloud_to_country_and_zones.csv",
-        "world_bank/API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv": "world_bank_tic_exports.csv",
-        "world_bank/Metadata_Country_API_BX.GSR.CCIS.CD_DS2_en_csv_v2_920.csv": "world_bank_metadata.csv",
-    }
-    optional_files = {
-        "reference/aws_ec2_on_demand_usd_per_hour.csv": "aws_ec2_prices.csv",
-    }
-    os.makedirs(DATA_PATH, exist_ok=True)
-    for s3_path, local_name in required_files.items():
-        dest = os.path.join(DATA_PATH, local_name)
-        client.download_file(S3_BRONZE_BUCKET, s3_path, dest)
-        print(f"OK {local_name} (Bronze -> local)")
-    for s3_path, local_name in optional_files.items():
-        try:
-            client.head_object(Bucket=S3_BRONZE_BUCKET, Key=s3_path)
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code", "")
-            if code in ("404", "NoSuchKey", "NotFound"):
-                print(f"Omitido (no en Bronze): {s3_path}")
-                continue
-            raise
-        dest = os.path.join(DATA_PATH, local_name)
-        client.download_file(S3_BRONZE_BUCKET, s3_path, dest)
-        print(f"OK {local_name} (Bronze -> local)")
-
 # ==========================================================
 # DEFINICIÓN DEL DAG
 # ==========================================================
@@ -121,9 +88,9 @@ with DAG(
         python_callable=copy_sources_bucket_to_bronze,
     )
 
-    task_sync_business_data = PythonOperator(
-        task_id='sync_business_references',
-        python_callable=sync_external_references
+    task_build_aws_pricing_reference = BashOperator(
+        task_id='build_aws_ec2_pricing_reference',
+        bash_command=f"python3 {SCRIPTS_PATH}/build_aws_ec2_pricing_reference.py",
     )
 
     task_generate_logs = BashOperator(
@@ -136,8 +103,8 @@ with DAG(
         ),
     )
 
-    task_fetch_api = BashOperator(
-        task_id='fetch_carbon_intensity',
+    task_ingest_electricity_maps_api = BashOperator(
+        task_id='ingest_electricity_maps_api',
         bash_command=(
             f"python3 {SCRIPTS_PATH}/ingest_electricity_maps.py "
             f"--mode latest "
@@ -147,18 +114,13 @@ with DAG(
         env={**os.environ, 'AWS_S3_BUCKET': S3_BRONZE_BUCKET}
     )
 
-    task_upload_s3 = BashOperator(
-        task_id='upload_all_to_s3_bronze',
-        bash_command=f"python3 {SCRIPTS_PATH}/upload_bronze_to_s3.py --bucket {S3_BRONZE_BUCKET}"
-    )
-
     task_bronze_validations_remote = SSHOperator(
         task_id='validate_bronze_quality_remote',
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} && "
-            "spark-submit jobs/quality/bronze_validations.py"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/bronze_validations.py"
         ),
         cmd_timeout=1800,
     )
@@ -170,7 +132,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} S3_SILVER_BUCKET={S3_SILVER_BUCKET} && "
-            "spark-submit jobs/etl/bronze_to_silver.py"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/etl/bronze_to_silver.py"
         ),
         cmd_timeout=3600,
     )
@@ -181,7 +143,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} S3_SILVER_BUCKET={S3_SILVER_BUCKET} && "
-            "spark-submit jobs/quality/silver_validations.py"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/silver_validations.py"
         ),
         cmd_timeout=3600,
     )
@@ -192,7 +154,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} S3_SILVER_BUCKET={S3_SILVER_BUCKET} && "
-            "spark-submit jobs/quality/audit.py"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/audit.py"
         ),
         cmd_timeout=3600,
     )
@@ -204,7 +166,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_SILVER_BUCKET={S3_SILVER_BUCKET} S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
-            "spark-submit jobs/etl/silver_to_gold.py"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/etl/silver_to_gold.py"
         ),
         cmd_timeout=3600,
     )
@@ -215,7 +177,7 @@ with DAG(
         command=(
             f"cd {SPARK_REPO_PATH} && "
             f"export S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
-            "spark-submit jobs/quality/gold_validations.py --fail"
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/gold_validations.py --fail"
         ),
         cmd_timeout=3600,
     )
@@ -223,10 +185,9 @@ with DAG(
     # --- FLUJO DE EJECUCIÓN ---
     chain(
         task_sources_to_bronze,
-        task_sync_business_data,
+        task_build_aws_pricing_reference,
         task_generate_logs,
-        task_fetch_api,
-        task_upload_s3,
+        task_ingest_electricity_maps_api,
         task_bronze_validations_remote,
         task_silver_transform_remote,
         task_silver_validations_remote,

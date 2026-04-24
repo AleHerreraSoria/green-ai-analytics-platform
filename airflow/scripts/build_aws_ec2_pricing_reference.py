@@ -1,20 +1,30 @@
 """
-Genera `bronze/reference/aws_ec2_on_demand_usd_per_hour.csv`.
+Genera `reference/aws_ec2_on_demand_usd_per_hour.csv` directo en S3 Bronze (sin disco local).
 
 Precios base (USD/h, Linux, On-Demand, shared tenancy) para US East (N. Virginia)
 tomados de referencia pública https://instances.vantage.sh (consulta 2026-04).
 Multiplicadores regionales son aproximaciones frecuentes respecto a us-east-1;
 reemplazar por AWS Price List API o export oficial para producción.
 
-Requisitos: solo stdlib. Lee regiones de `bronze/reference/geo_cloud_to_country_and_zones.csv`
-e instancias de `data/Code_Carbon/instances.csv` (provider=aws).
+Lee insumos desde el mismo bucket Bronze:
+- reference/geo_cloud_to_country_and_zones.csv
+- mlco2/instances.csv
 """
 
 from __future__ import annotations
 
 import csv
+import io
+import os
 import sys
-from pathlib import Path
+from typing import Any
+
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:
+    print("Instala boto3: pip install boto3", file=sys.stderr)
+    raise SystemExit(1)
 
 # USD/h en us-east-1 — Linux, On-Demand (Vantage / listado público EC2, abril 2026)
 _BASE_US_EAST_1: dict[str, float] = {
@@ -64,60 +74,43 @@ _AS_OF = "2026-04-08"
 _SOURCE = "instances.vantage.sh us-east-1 OD Linux + regional multipliers (approx; see script)"
 
 
-def _spark_root() -> Path:
-    # .../spark/jobs/reference/build_aws_ec2_pricing_reference.py -> .../spark
-    return Path(__file__).resolve().parents[2]
+def _read_csv_from_s3(client: Any, bucket: str, key: str) -> list[dict[str, str]]:
+    try:
+        obj = client.get_object(Bucket=bucket, Key=key)
+        body = obj["Body"].read().decode("utf-8")
+    except (ClientError, BotoCoreError, OSError, KeyError) as e:
+        raise RuntimeError(f"No se pudo leer s3://{bucket}/{key}: {e}") from e
+    return list(csv.DictReader(io.StringIO(body)))
 
 
-def _repo_root() -> Path:
-    # .../repo/spark/jobs/reference/build_aws_ec2_pricing_reference.py -> .../repo
-    return Path(__file__).resolve().parents[3]
+def _load_aws_regions(client: Any, bucket: str, key: str) -> list[str]:
+    rows = _read_csv_from_s3(client, bucket, key)
+    return [row["cloud_region"] for row in rows if row.get("cloud_provider") == "aws"]
 
 
-def _first_existing(candidates: list[Path], label: str) -> Path:
-    for p in candidates:
-        if p.exists():
-            return p
-    joined = "\n".join(f"- {c}" for c in candidates)
-    raise FileNotFoundError(f"No se encontró {label}. Rutas intentadas:\n{joined}")
-
-
-def _load_aws_regions(spark_root: Path, repo_root: Path) -> list[str]:
-    path = _first_existing(
-        [
-            spark_root / "bronze/reference/geo_cloud_to_country_and_zones.csv",
-            repo_root / "bronze/reference/geo_cloud_to_country_and_zones.csv",
-            repo_root / "data/geo_cloud_to_country_and_zones.csv",
-        ],
-        "geo_cloud_to_country_and_zones.csv",
-    )
-    with path.open(encoding="utf-8", newline="") as f:
-        r = csv.DictReader(f)
-        return [row["cloud_region"] for row in r if row.get("cloud_provider") == "aws"]
-
-
-def _load_aws_instance_types(spark_root: Path, repo_root: Path) -> list[str]:
-    path = _first_existing(
-        [
-            repo_root / "data/Code_Carbon/instances.csv",
-            spark_root / "data/Code_Carbon/instances.csv",
-        ],
-        "instances.csv de Code Carbon",
-    )
+def _load_aws_instance_types(client: Any, bucket: str, key: str) -> list[str]:
+    rows = _read_csv_from_s3(client, bucket, key)
     out: list[str] = []
-    with path.open(encoding="utf-8", newline="") as f:
-        r = csv.DictReader(f)
-        for row in r:
-            if (row.get("provider") or "").strip().lower() == "aws":
-                out.append(row["id"].strip())
+    for row in rows:
+        if (row.get("provider") or "").strip().lower() == "aws":
+            iid = (row.get("id") or "").strip()
+            if iid:
+                out.append(iid)
     return out
 
 
 def main() -> int:
-    spark_root = _spark_root()
-    repo_root = _repo_root()
-    regions = _load_aws_regions(spark_root, repo_root)
-    instances = _load_aws_instance_types(spark_root, repo_root)
+    bucket = (os.environ.get("S3_BRONZE_BUCKET") or "").strip()
+    if not bucket:
+        print("Falta S3_BRONZE_BUCKET.", file=sys.stderr)
+        return 1
+
+    region_name = os.environ.get("AWS_DEFAULT_REGION") or None
+    session = boto3.Session(profile_name=os.environ.get("AWS_PROFILE") or None)
+    s3 = session.client("s3", region_name=region_name)
+
+    regions = _load_aws_regions(s3, bucket, "reference/geo_cloud_to_country_and_zones.csv")
+    instances = _load_aws_instance_types(s3, bucket, "mlco2/instances.csv")
     missing_base = [i for i in instances if i not in _BASE_US_EAST_1]
     if missing_base:
         print(f"Faltan precios base us-east-1 para: {missing_base}", file=sys.stderr)
@@ -126,9 +119,6 @@ def main() -> int:
     if missing_mult:
         print(f"Faltan multiplicadores regionales para: {missing_mult}", file=sys.stderr)
         return 1
-
-    out_path = spark_root / "bronze/reference/aws_ec2_on_demand_usd_per_hour.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
         "cloud_provider",
@@ -146,34 +136,46 @@ def main() -> int:
         "pricing_notes",
     ]
     rows_written = 0
-    with out_path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for region in regions:
-            mult = _REGION_MULT[region]
-            for itype in instances:
-                base = _BASE_US_EAST_1[itype]
-                price = round(base * mult, 4)
-                w.writerow(
-                    {
-                        "cloud_provider": "aws",
-                        "cloud_region": region,
-                        "instance_type": itype,
-                        "operating_system": "linux",
-                        "tenancy": "shared",
-                        "pricing_model": "on_demand",
-                        "currency": "USD",
-                        "price_usd_per_hour": f"{price:.4f}",
-                        "price_basis_region": "us-east-1",
-                        "regional_multiplier": f"{mult:.4f}",
-                        "as_of_date": _AS_OF,
-                        "source": _SOURCE,
-                        "pricing_notes": "TCO compute proxy; excludes EBS egress RI Spot. China/Gov multipliers approximate.",
-                    }
-                )
-                rows_written += 1
+    out = io.StringIO()
+    w = csv.DictWriter(out, fieldnames=fieldnames)
+    w.writeheader()
+    for region in regions:
+        mult = _REGION_MULT[region]
+        for itype in instances:
+            base = _BASE_US_EAST_1[itype]
+            price = round(base * mult, 4)
+            w.writerow(
+                {
+                    "cloud_provider": "aws",
+                    "cloud_region": region,
+                    "instance_type": itype,
+                    "operating_system": "linux",
+                    "tenancy": "shared",
+                    "pricing_model": "on_demand",
+                    "currency": "USD",
+                    "price_usd_per_hour": f"{price:.4f}",
+                    "price_basis_region": "us-east-1",
+                    "regional_multiplier": f"{mult:.4f}",
+                    "as_of_date": _AS_OF,
+                    "source": _SOURCE,
+                    "pricing_notes": "TCO compute proxy; excludes EBS egress RI Spot. China/Gov multipliers approximate.",
+                }
+            )
+            rows_written += 1
 
-    print(f"OK {out_path} ({rows_written} filas)")
+    key = "reference/aws_ec2_on_demand_usd_per_hour.csv"
+    try:
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=out.getvalue().encode("utf-8"),
+            ContentType="text/csv; charset=utf-8",
+        )
+    except (ClientError, BotoCoreError, OSError) as e:
+        print(f"No se pudo escribir s3://{bucket}/{key}: {e}", file=sys.stderr)
+        return 1
+
+    print(f"OK s3://{bucket}/{key} ({rows_written} filas)")
     return 0
 
 

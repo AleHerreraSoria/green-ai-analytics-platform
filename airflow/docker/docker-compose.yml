@@ -13,6 +13,8 @@ x-airflow-common:
     AIRFLOW_AWS_CONN_ID: ${AIRFLOW_AWS_CONN_ID:?AIRFLOW_AWS_CONN_ID is required}
     SPARK_SSH_CONN_ID: ${SPARK_SSH_CONN_ID:?SPARK_SSH_CONN_ID is required}
     SPARK_REPO_PATH: ${SPARK_REPO_PATH:?SPARK_REPO_PATH is required}
+    SPARK_SUBMIT_BIN: ${SPARK_SUBMIT_BIN:?SPARK_SUBMIT_BIN is required}
+    SPARK_SUBMIT_EXTRA_ARGS: ${SPARK_SUBMIT_EXTRA_ARGS:-}
     AIRFLOW_SCRIPTS_PATH: ${AIRFLOW_SCRIPTS_PATH:?AIRFLOW_SCRIPTS_PATH is required}
     AIRFLOW_DATA_PATH: ${AIRFLOW_DATA_PATH:?AIRFLOW_DATA_PATH is required}
     S3_SOURCES_BUCKET: ${S3_SOURCES_BUCKET:?S3_SOURCES_BUCKET is required}
@@ -40,6 +42,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/scripts:/opt/airflow/scripts
     - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/data:/opt/airflow/data
+    - ${AIRFLOW_SSH_PRIVATE_KEY_PATH:?AIRFLOW_SSH_PRIVATE_KEY_PATH is required}:/opt/airflow/.ssh/id_rsa:ro
   user: "${AIRFLOW_UID:?AIRFLOW_UID is required}:0"
   depends_on:
     &airflow-common-depends-on
