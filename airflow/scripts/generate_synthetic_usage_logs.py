@@ -4,18 +4,22 @@ Genera logs sintéticos de sesiones de uso de IA alineados con docs/DICCIONARIO_
 Integridad referencial: regiones solo desde impact.csv (AWS); GPUs e instancias desde los CSV MLCO2.
 Movilidad: cada user_id tiene un conjunto de regiones muestreadas del catálogo para sesiones en distintas zonas.
 Casos borde: ~1% de filas con duration_hours inválido (vacío o negativo) para pruebas en Silver.
+
+Salida: fichero local (--output) o subida directa a S3 (--s3-bucket / --s3-key) sin escribir el CSV en disco.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import io
+import os
 import random
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from faker import Faker
 
@@ -73,6 +77,17 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+def _read_csv_rows_s3(
+    *,
+    s3_client: Any,
+    bucket: str,
+    key: str,
+) -> list[dict[str, str]]:
+    obj = s3_client.get_object(Bucket=bucket, Key=key)
+    body = obj["Body"].read().decode("utf-8")
+    return list(csv.DictReader(io.StringIO(body)))
+
+
 def _parse_tdp(raw: str) -> float | None:
     s = (raw or "").strip().lower()
     if not s or s == "nan":
@@ -120,6 +135,46 @@ def load_aws_regions(mlco2_dir: Path) -> list[str]:
         if reg and reg not in regions:
             regions.append(reg)
     return regions
+
+
+def load_mlco2_from_s3(
+    *,
+    s3_client: Any,
+    bucket: str,
+    prefix: str,
+) -> tuple[list[dict[str, str]], list[tuple[str, str]], list[str]]:
+    p = prefix.strip().strip("/")
+    rows_gpus = _read_csv_rows_s3(s3_client=s3_client, bucket=bucket, key=f"{p}/gpus.csv")
+    rows_instances = _read_csv_rows_s3(s3_client=s3_client, bucket=bucket, key=f"{p}/instances.csv")
+    rows_impact = _read_csv_rows_s3(s3_client=s3_client, bucket=bucket, key=f"{p}/impact.csv")
+
+    gpus: list[dict[str, str]] = []
+    for r in rows_gpus:
+        if (r.get("type") or "").strip().lower() != "gpu":
+            continue
+        if _parse_tdp(r.get("tdp_watts", "") or "") is None:
+            continue
+        gpus.append(r)
+
+    instances: list[tuple[str, str]] = []
+    for r in rows_instances:
+        prov = (r.get("provider") or "").strip().lower()
+        if prov != "aws":
+            continue
+        iid = (r.get("id") or "").strip()
+        gpu = (r.get("gpu") or "").strip()
+        if iid and gpu:
+            instances.append((iid, gpu))
+
+    regions: list[str] = []
+    for r in rows_impact:
+        if (r.get("provider") or "").strip().lower() != "aws":
+            continue
+        reg = (r.get("region") or "").strip()
+        if reg and reg not in regions:
+            regions.append(reg)
+
+    return gpus, instances, regions
 
 
 def build_user_region_pools(
@@ -247,13 +302,43 @@ def main() -> int:
         "--mlco2-dir",
         type=Path,
         default=None,
-        help="Carpeta con gpus.csv, instances.csv, impact.csv (por defecto data/Code_Carbon bajo la raíz del repo).",
+        help="Carpeta con gpus.csv, instances.csv, impact.csv (por defecto data/Code_Carbon). Ignorado si se usa --mlco2-s3-bucket.",
+    )
+    parser.add_argument(
+        "--mlco2-s3-bucket",
+        default=None,
+        help="Leer catálogos MLCO2 directo desde este bucket S3.",
+    )
+    parser.add_argument(
+        "--mlco2-s3-prefix",
+        default="mlco2",
+        help="Prefijo S3 para catálogos MLCO2 (por defecto: mlco2).",
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Ruta del CSV de salida (por defecto data/usage_logs.csv).",
+        help="Ruta del CSV local (por defecto data/usage_logs.csv). Ignorado si se usa --s3-bucket.",
+    )
+    parser.add_argument(
+        "--s3-bucket",
+        default=None,
+        help="Bucket S3: si se indica, el CSV se sube con put_object (no escribe fichero local).",
+    )
+    parser.add_argument(
+        "--s3-key",
+        default="usage_logs/usage_logs.csv",
+        help="Clave del objeto en S3 (solo con --s3-bucket).",
+    )
+    parser.add_argument(
+        "--aws-region",
+        default=os.environ.get("AWS_DEFAULT_REGION"),
+        help="Región del cliente S3 (por defecto AWS_DEFAULT_REGION).",
+    )
+    parser.add_argument(
+        "--aws-profile",
+        default=os.environ.get("AWS_PROFILE"),
+        help="Perfil AWS CLI opcional.",
     )
     parser.add_argument(
         "--allow-fallback",
@@ -283,19 +368,47 @@ def main() -> int:
 
     root = _repo_root()
     mlco2_dir = args.mlco2_dir or (root / "data" / "Code_Carbon")
+    mlco2_s3_bucket = (args.mlco2_s3_bucket or "").strip()
 
-    gpus = load_gpus(mlco2_dir)
-    instances = load_instances(mlco2_dir)
-    regions = load_aws_regions(mlco2_dir)
+    if mlco2_s3_bucket:
+        try:
+            import boto3
+            from botocore.exceptions import BotoCoreError, ClientError
+        except ImportError:
+            print("Instala boto3 para usar --mlco2-s3-bucket.", file=sys.stderr)
+            return 1
+        session = boto3.Session(profile_name=args.aws_profile) if args.aws_profile else boto3.Session()
+        s3 = session.client("s3", region_name=args.aws_region or None)
+        try:
+            gpus, instances, regions = load_mlco2_from_s3(
+                s3_client=s3,
+                bucket=mlco2_s3_bucket,
+                prefix=args.mlco2_s3_prefix,
+            )
+        except (ClientError, BotoCoreError, OSError, KeyError) as e:
+            print(
+                f"Error leyendo MLCO2 desde s3://{mlco2_s3_bucket}/{args.mlco2_s3_prefix}: {e}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        gpus = load_gpus(mlco2_dir)
+        instances = load_instances(mlco2_dir)
+        regions = load_aws_regions(mlco2_dir)
 
     if not args.allow_fallback:
         missing: list[str] = []
+        source_desc = (
+            f"s3://{mlco2_s3_bucket}/{args.mlco2_s3_prefix}"
+            if mlco2_s3_bucket
+            else str(mlco2_dir)
+        )
         if not regions:
-            missing.append(f"sin regiones AWS en impact.csv ({mlco2_dir})")
+            missing.append(f"sin regiones AWS en impact.csv ({source_desc})")
         if not instances:
-            missing.append(f"sin instancias aws en instances.csv ({mlco2_dir})")
+            missing.append(f"sin instancias aws en instances.csv ({source_desc})")
         if not gpus:
-            missing.append(f"sin GPUs válidas en gpus.csv ({mlco2_dir})")
+            missing.append(f"sin GPUs válidas en gpus.csv ({source_desc})")
         if missing:
             for m in missing:
                 print(f"Error: {m}. Copia los CSV MLCO2 o usa --allow-fallback.", file=sys.stderr)
@@ -327,8 +440,12 @@ def main() -> int:
         rng, regions, NUM_USERS, pool_size=args.mobility_regions_per_user
     )
 
-    out_path = args.output or (root / "data" / "usage_logs.csv")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    s3_bucket = (args.s3_bucket or "").strip()
+    use_s3 = bool(s3_bucket)
+    out_path = None if use_s3 else (args.output or (root / "data" / "usage_logs.csv"))
+    if not use_s3:
+        assert out_path is not None
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
     edge_count = 0
     target_edges = int(round(args.rows * args.edge_case_rate)) if args.edge_case_rate > 0 else 0
@@ -336,8 +453,9 @@ def main() -> int:
     if target_edges > 0:
         edge_indices = set(rng.sample(range(args.rows), k=min(target_edges, args.rows)))
 
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS, extrasaction="ignore")
+    def write_rows_to(handle: TextIO) -> None:
+        nonlocal edge_count
+        w = csv.DictWriter(handle, fieldnames=OUTPUT_FIELDS, extrasaction="ignore")
         w.writeheader()
         for i in range(args.rows):
             is_edge = i in edge_indices
@@ -353,10 +471,41 @@ def main() -> int:
             )
             w.writerow(row)
 
-    print(
-        f"Escritos {args.rows} registros en {out_path} "
-        f"({edge_count} filas con duration/energia no validas para pruebas Silver)."
-    )
+    if use_s3:
+        try:
+            import boto3
+            from botocore.exceptions import BotoCoreError, ClientError
+        except ImportError:
+            print("Instala boto3 para usar --s3-bucket.", file=sys.stderr)
+            return 1
+        buf = io.StringIO()
+        write_rows_to(buf)
+        body = buf.getvalue().encode("utf-8")
+        session = boto3.Session(profile_name=args.aws_profile) if args.aws_profile else boto3.Session()
+        s3 = session.client("s3", region_name=args.aws_region or None)
+        key = (args.s3_key or "usage_logs/usage_logs.csv").lstrip("/")
+        try:
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=key,
+                Body=body,
+                ContentType="text/csv; charset=utf-8",
+            )
+        except (ClientError, BotoCoreError, OSError) as e:
+            print(f"[error] S3 put_object s3://{s3_bucket}/{key}: {e}", file=sys.stderr)
+            return 1
+        print(
+            f"Escritos {args.rows} registros en s3://{s3_bucket}/{key} "
+            f"({edge_count} filas con duration/energia no validas para pruebas Silver)."
+        )
+    else:
+        assert out_path is not None
+        with out_path.open("w", newline="", encoding="utf-8") as f:
+            write_rows_to(f)
+        print(
+            f"Escritos {args.rows} registros en {out_path} "
+            f"({edge_count} filas con duration/energia no validas para pruebas Silver)."
+        )
     return 0
 
 
