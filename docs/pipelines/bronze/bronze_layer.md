@@ -12,7 +12,7 @@ Bronze almacena datos crudos o mínimamente transformados para trazabilidad y re
 |--------|------------------------|
 | Formato | CSV UTF-8 con cabecera y JSON (Electricity Maps). |
 | Ubicación | Local: `bronze/<dataset>/`. S3: prefijos en `s3://green-ai-pf-bronze-a0e96d06/`. |
-| Contrato de datos | Definido en `docs/DICCIONARIO_DE_DATOS.md` (§4 logs, §7 mapeo geo, §8 precios EC2). |
+| Contrato de datos | Definido en `../../references/data_dictionary.md` (§4 logs, §7 mapeo geo, §8 precios EC2). |
 
 ---
 
@@ -62,7 +62,7 @@ Esquema principal del CSV:
 | `energy_consumed_kwh` | float o vacío | `(duration_hours × TDP_W × gpu_utilization) / 1000` si la duración es válida. |
 | `execution_status` | string | `Success` (~95 %) o `Failed` (~5 %). |
 
-Definición de negocio y ejemplos: `docs/DICCIONARIO_DE_DATOS.md` (§4).
+Definición de negocio y ejemplos: `../../references/data_dictionary.md` (§4).
 
 ---
 
@@ -181,8 +181,8 @@ Si se agrega un nuevo dataset, actualizar `scripts/upload_bronze_to_s3.py` y est
 
 ## 7. Referencias cruzadas
 
-- `docs/DICCIONARIO_DE_DATOS.md` — §4 Generador de logs (sintético), §4.0 principios; **§7** `geo_cloud_to_country_and_zones.csv`; **§8** `aws_ec2_on_demand_usd_per_hour.csv`.
-- `docs/PREGUNTAS_DE_NEGOCIO.md` — uso de logs, mapeo geográfico y precios EC2 en preguntas de coste / huella.
+- `../../references/data_dictionary.md` — §4 Generador de logs (sintético), §4.0 principios; **§7** `geo_cloud_to_country_and_zones.csv`; **§8** `aws_ec2_on_demand_usd_per_hour.csv`.
+- `../../architecture/business_questions.md` — uso de logs, mapeo geográfico y precios EC2 en preguntas de coste / huella.
 - `scripts/generate_synthetic_usage_logs.py` — implementación fuente de verdad del comportamiento descrito.
 - `scripts/build_aws_ec2_pricing_reference.py` — generación del catálogo de precios EC2 en `bronze/reference/`.
 - `scripts/ingest_electricity_maps.py` — ingesta Bronze desde la API Electricity Maps hacia `electricity_maps/` en S3.

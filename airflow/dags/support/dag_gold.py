@@ -1,13 +1,12 @@
 from airflow import DAG
 from airflow.providers.ssh.operators.ssh import SSHOperator
 import pendulum
-import os
-
-
-SPARK_SSH_CONN_ID = "spark_ssh"
-SPARK_REPO_PATH = os.getenv("SPARK_REPO_PATH", "/opt/green-ai-analytics-platform/spark")
-S3_SILVER = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
-S3_GOLD = os.getenv("S3_GOLD_BUCKET", "green-ai-pf-gold-a0e96d06")
+from config.settings import S3_GOLD_BUCKET
+from config.settings import S3_SILVER_BUCKET
+from config.settings import SPARK_REPO_PATH
+from config.settings import SPARK_SUBMIT_BIN
+from config.settings import SPARK_SUBMIT_EXTRA_ARGS
+from config.settings import SPARK_SSH_CONN_ID
 
 
 with DAG(
@@ -24,8 +23,8 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_SILVER_BUCKET={S3_SILVER} S3_GOLD_BUCKET={S3_GOLD} && "
-            "spark-submit jobs/etl/silver_to_gold.py"
+            f"export S3_SILVER_BUCKET={S3_SILVER_BUCKET} S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/etl/silver_to_gold.py"
         ),
         cmd_timeout=7200,
     )
@@ -35,8 +34,8 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            f"export S3_GOLD_BUCKET={S3_GOLD} && "
-            "spark-submit jobs/quality/gold_validations.py --fail"
+            f"export S3_GOLD_BUCKET={S3_GOLD_BUCKET} && "
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/gold_validations.py --fail"
         ),
         cmd_timeout=3600,
     )

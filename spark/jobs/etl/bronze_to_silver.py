@@ -31,6 +31,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("green-ai.bronze_to_silver")
 
+
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
 # ── Dependencias opcionales de desarrollo ──────────────────────────────────
 # En producción (EC2/Airflow) no existirá el archivo .env físico.
 # Las variables S3_BRONZE_BUCKET y S3_SILVER_BUCKET serán inyectadas
@@ -68,8 +75,8 @@ from libs.schemas import (
 )
 from libs.writer import WriteResult, write_to_silver
 
-BRONZE_BUCKET = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
-SILVER_BUCKET = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
+BRONZE_BUCKET = require_env("S3_BRONZE_BUCKET")
+SILVER_BUCKET = require_env("S3_SILVER_BUCKET")
 
 BRONZE = f"s3a://{BRONZE_BUCKET}"
 SILVER = f"s3a://{SILVER_BUCKET}"
@@ -103,11 +110,10 @@ def build_spark() -> SparkSession:
                 "org.apache.hadoop:hadoop-aws:3.3.4,"
                 "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
                 "software.amazon.awssdk:bundle:2.20.18")
-        # By-pass the credential provider chain, providing keys explicitly
-        # eliminates 4-minute EC2 metadata timeouts on AWS Local Run.
-        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID"))
-        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY"))
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "com.amazonaws.auth.EnvironmentVariableCredentialsProvider")
+        .config(
+            "spark.hadoop.fs.s3a.aws.credentials.provider",
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        )
         # Fix for Hadoop 3.3.4 "60s" NumberFormatException bug
         .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
         .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
@@ -128,12 +134,12 @@ def build_spark() -> SparkSession:
 
 def _safe_timestamp(col_name: str, fmt: str) -> F.Column:
     """
-    Safe cast de string a Timestamp garantizado para Spark 4.x.
-    Usa try_to_timestamp() que devuelve NULL para strings inválidos
-    sin lanzar excepción, incluso con spark.sql.ansi.enabled=true.
+    Safe cast de string a Timestamp compatible con Spark 3.x/4.x.
+    Con spark.sql.ansi.enabled=false, to_timestamp devuelve NULL
+    para valores inválidos en lugar de lanzar excepción.
     El llamador filtra los nulos resultantes en columnas clave.
     """
-    return F.try_to_timestamp(F.col(col_name), F.lit(fmt)).alias(col_name)
+    return F.to_timestamp(F.col(col_name), fmt).alias(col_name)
 
 
 def _log_dropped(df_before, df_after, label: str):
@@ -150,6 +156,21 @@ def _log_dropped(df_before, df_after, label: str):
     else:
         logger.info("[QA:%s] Sin filas descartadas (%d total).", label, n_before)
     return df_after
+
+
+def _require_materialized_write(result: WriteResult, dataset_key: str) -> None:
+    """
+    Falla explícitamente cuando una tabla crítica no queda materializada en Silver.
+    Evita falsos "OK" en el resumen del job cuando no se escribió nada.
+    """
+    if result.status == "ERROR":
+        raise RuntimeError(
+            f"WriteResult ERROR en '{dataset_key}': {result.error or 'unknown error'}"
+        )
+    if result.rows_written <= 0:
+        raise RuntimeError(
+            f"'{dataset_key}' no materializó filas en Silver (rows_written=0)."
+        )
 
 
 # ===========================================================================
@@ -230,14 +251,14 @@ def process_carbon_intensity_history(spark: SparkSession) -> tuple[DataFrame, in
         .select(
             F.col("event.zone").alias("zone"),
             F.col("event.carbonIntensity").alias("carbon_intensity"),
-            F.try_to_timestamp(
-                F.col("event.datetime"), F.lit("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            F.to_timestamp(
+                F.col("event.datetime"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
             ).alias("datetime"),
-            F.try_to_timestamp(
-                F.col("event.updatedAt"), F.lit("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            F.to_timestamp(
+                F.col("event.updatedAt"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
             ).alias("updated_at"),
-            F.try_to_timestamp(
-                F.col("event.createdAt"), F.lit("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            F.to_timestamp(
+                F.col("event.createdAt"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
             ).alias("created_at"),
             F.col("event.emissionFactorType").alias("emission_factor_type"),
             F.col("event.isEstimated").alias("is_estimated"),
@@ -258,7 +279,9 @@ def process_carbon_intensity_history(spark: SparkSession) -> tuple[DataFrame, in
     )
     df = _log_dropped(df_raw_exp, df_clean, "carbon_intensity/history")
 
-    result: WriteResult = write_to_silver(df, "electricity_maps/carbon_intensity/history")
+    dataset_key = "electricity_maps/carbon_intensity/history"
+    result: WriteResult = write_to_silver(df, dataset_key)
+    _require_materialized_write(result, dataset_key)
     return df, result.rows_written
 
 
@@ -286,8 +309,8 @@ def process_electricity_mix(spark: SparkSession) -> tuple[DataFrame, int]:
             F.col("zone"),
             F.col("unit"),
             F.col("temporalGranularity").alias("temporal_granularity"),
-            F.try_to_timestamp(
-                F.col("row.datetime"), F.lit("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            F.to_timestamp(
+                F.col("row.datetime"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
             ).alias("datetime"),
             F.col("row.nuclear").alias("nuclear_mw"),
             F.col("row.geothermal").alias("geothermal_mw"),
@@ -310,7 +333,9 @@ def process_electricity_mix(spark: SparkSession) -> tuple[DataFrame, int]:
     df_clean = df_raw_exp.filter(F.col("datetime").isNotNull())
     df = _log_dropped(df_raw_exp, df_clean, "electricity_mix/latest")
 
-    result: WriteResult = write_to_silver(df, "electricity_maps/electricity_mix/latest")
+    dataset_key = "electricity_maps/electricity_mix/latest"
+    result: WriteResult = write_to_silver(df, dataset_key)
+    _require_materialized_write(result, dataset_key)
     return df, result.rows_written
 
 
@@ -747,48 +772,55 @@ def main():
     spark = build_spark()
     results = {}
 
-    logger.info("=" * 60)
-    logger.info(" GREEN AI — Bronze → Silver ETL")
-    logger.info("=" * 60)
+    try:
+        logger.info("=" * 60)
+        logger.info(" GREEN AI — Bronze → Silver ETL")
+        logger.info("=" * 60)
 
-    steps = [
-        ("electricity_maps/carbon_intensity/latest",  lambda: process_carbon_intensity_flat(spark, "latest")),
-        ("electricity_maps/carbon_intensity/past",    lambda: process_carbon_intensity_flat(spark, "past")),
-        ("electricity_maps/carbon_intensity/history", lambda: process_carbon_intensity_history(spark)),
-        ("electricity_maps/electricity_mix/latest",   lambda: process_electricity_mix(spark)),
-        ("reference/zones_dimension",                 lambda: process_observed_zones_dimension(spark)),
-        ("global_petrol_prices",                      lambda: process_global_petrol_prices(spark)),
-        ("mlco2/yearly_averages",                     lambda: process_mlco2_yearly_avg(spark)),
-        ("mlco2/instances",                           lambda: process_mlco2_instances(spark)),
-        ("mlco2/impact",                              lambda: process_mlco2_impact(spark)),
-        ("mlco2/gpus",                                lambda: process_mlco2_gpus(spark)),
-        ("owid",                                      lambda: process_owid(spark)),
-        ("reference/ec2_pricing",                     lambda: process_ec2_pricing(spark)),
-        ("reference/geo_cloud_mapping",               lambda: process_geo_cloud_mapping(spark)),
-        ("usage_logs",                                lambda: process_usage_logs(spark)),
-        ("world_bank/ict_exports",                    lambda: process_world_bank(spark)),
-        ("reference/world_bank_metadata",             lambda: process_world_bank_metadata(spark)),
-    ]
+        steps = [
+            ("electricity_maps/carbon_intensity/latest",  lambda: process_carbon_intensity_flat(spark, "latest")),
+            ("electricity_maps/carbon_intensity/past",    lambda: process_carbon_intensity_flat(spark, "past")),
+            ("electricity_maps/carbon_intensity/history", lambda: process_carbon_intensity_history(spark)),
+            ("electricity_maps/electricity_mix/latest",   lambda: process_electricity_mix(spark)),
+            ("reference/zones_dimension",                 lambda: process_observed_zones_dimension(spark)),
+            ("global_petrol_prices",                      lambda: process_global_petrol_prices(spark)),
+            ("mlco2/yearly_averages",                     lambda: process_mlco2_yearly_avg(spark)),
+            ("mlco2/instances",                           lambda: process_mlco2_instances(spark)),
+            ("mlco2/impact",                              lambda: process_mlco2_impact(spark)),
+            ("mlco2/gpus",                                lambda: process_mlco2_gpus(spark)),
+            ("owid",                                      lambda: process_owid(spark)),
+            ("reference/ec2_pricing",                     lambda: process_ec2_pricing(spark)),
+            ("reference/geo_cloud_mapping",               lambda: process_geo_cloud_mapping(spark)),
+            ("usage_logs",                                lambda: process_usage_logs(spark)),
+            ("world_bank/ict_exports",                    lambda: process_world_bank(spark)),
+            ("reference/world_bank_metadata",             lambda: process_world_bank_metadata(spark)),
+        ]
 
-    for name, fn in steps:
-        try:
-            logger.info("[>] Procesando: %s ...", name)
-            _, count = fn()
-            results[name] = {"status": "OK", "rows_written": count}
-            logger.info("    OK  %s — %d filas escritas en Silver.", name, count)
-        except Exception as exc:
-            results[name] = {"status": "ERROR", "error": str(exc)}
-            logger.error("    ERROR  %s — %s", name, exc)
+        for name, fn in steps:
+            try:
+                logger.info("[>] Procesando: %s ...", name)
+                _, count = fn()
+                results[name] = {"status": "OK", "rows_written": count}
+                logger.info("    OK  %s — %d filas escritas en Silver.", name, count)
+            except Exception as exc:
+                results[name] = {"status": "ERROR", "error": str(exc)}
+                logger.error("    ERROR  %s — %s", name, exc)
 
-    logger.info("=" * 60)
-    logger.info(" Resumen de ejecucion")
-    logger.info("=" * 60)
-    for name, r in results.items():
-        status = r["status"]
-        detail = r.get("rows_written", r.get("error"))
-        logger.info("  %-6s  %-35s %s", status, name, detail)
+        logger.info("=" * 60)
+        logger.info(" Resumen de ejecucion")
+        logger.info("=" * 60)
+        for name, r in results.items():
+            status = r["status"]
+            detail = r.get("rows_written", r.get("error"))
+            logger.info("  %-6s  %-35s %s", status, name, detail)
 
-    spark.stop()
+        error_steps = [name for name, r in results.items() if r.get("status") == "ERROR"]
+        if error_steps:
+            raise RuntimeError(
+                "Bronze->Silver finalizó con errores en datasets: " + ", ".join(error_steps)
+            )
+    finally:
+        spark.stop()
 
 
 if __name__ == "__main__":

@@ -8,24 +8,42 @@ x-airflow-common:
     &airflow-common-env
     AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
     AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
     ELECTRICITY_MAPS_TOKEN: ${ELECTRICITY_MAPS_TOKEN}
+    AIRFLOW_AWS_CONN_ID: ${AIRFLOW_AWS_CONN_ID:?AIRFLOW_AWS_CONN_ID is required}
+    SPARK_SSH_CONN_ID: ${SPARK_SSH_CONN_ID:?SPARK_SSH_CONN_ID is required}
+    SPARK_REPO_PATH: ${SPARK_REPO_PATH:?SPARK_REPO_PATH is required}
+    SPARK_SUBMIT_BIN: ${SPARK_SUBMIT_BIN:?SPARK_SUBMIT_BIN is required}
+    SPARK_SUBMIT_EXTRA_ARGS: ${SPARK_SUBMIT_EXTRA_ARGS:-}
+    AIRFLOW_SCRIPTS_PATH: ${AIRFLOW_SCRIPTS_PATH:?AIRFLOW_SCRIPTS_PATH is required}
+    AIRFLOW_DATA_PATH: ${AIRFLOW_DATA_PATH:?AIRFLOW_DATA_PATH is required}
+    S3_SOURCES_BUCKET: ${S3_SOURCES_BUCKET:?S3_SOURCES_BUCKET is required}
+    S3_BRONZE_BUCKET: ${S3_BRONZE_BUCKET:?S3_BRONZE_BUCKET is required}
+    S3_SILVER_BUCKET: ${S3_SILVER_BUCKET:?S3_SILVER_BUCKET is required}
+    S3_GOLD_BUCKET: ${S3_GOLD_BUCKET:?S3_GOLD_BUCKET is required}
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN:?AIRFLOW__DATABASE__SQL_ALCHEMY_CONN is required}
+    AIRFLOW__CELERY__RESULT_BACKEND: ${AIRFLOW__CELERY__RESULT_BACKEND:?AIRFLOW__CELERY__RESULT_BACKEND is required}
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
-    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:?AIRFLOW__CORE__FERNET_KEY is required}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-    AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
-    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # Sesión/CSRF: base_url debe coincidir con la URL del navegador; secret_key estable entre workers.
+    AIRFLOW__WEBSERVER__BASE_URL: ${AIRFLOW_BASE_URL:?AIRFLOW_BASE_URL is required}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:?AIRFLOW_WEBSERVER_SECRET_KEY is required}
+    AIRFLOW__WEBSERVER__COOKIE_SECURE: 'False'
+    AIRFLOW__WEBSERVER__SESSION_COOKIE_SAMESITE: 'Lax'
   volumes:
-    - ${AIRFLOW_PROJ_DIR:-..}/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-..}/logs:/opt/airflow/logs
-    - ${AIRFLOW_PROJ_DIR:-..}/config:/opt/airflow/config
-    - ${AIRFLOW_PROJ_DIR:-..}/plugins:/opt/airflow/plugins
-    - ${AIRFLOW_PROJ_DIR:-..}/scripts:/opt/airflow/scripts
-    - ${AIRFLOW_PROJ_DIR:-..}/data:/opt/airflow/data
-  user: "${AIRFLOW_UID:-50000}:0"
+    - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/scripts:/opt/airflow/scripts
+    - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}/data:/opt/airflow/data
+    - ${AIRFLOW_SSH_PRIVATE_KEY_PATH:?AIRFLOW_SSH_PRIVATE_KEY_PATH is required}:/opt/airflow/.ssh/id_rsa:ro
+  user: "${AIRFLOW_UID:?AIRFLOW_UID is required}:0"
   depends_on:
     &airflow-common-depends-on
     redis:
@@ -35,11 +53,11 @@ x-airflow-common:
 
 services:
   postgres:
-    image: postgres:13
+    image: postgres:13.16
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
@@ -48,7 +66,7 @@ services:
     restart: always
 
   redis:
-    image: redis:latest
+    image: redis:7.2.5-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -58,7 +76,7 @@ services:
     <<: *airflow-common
     command: webserver
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_WEBSERVER_PORT:-8080}:8080"
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -99,11 +117,11 @@ services:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
-      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
-      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:?_AIRFLOW_WWW_USER_USERNAME is required}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:?_AIRFLOW_WWW_USER_PASSWORD is required}
     user: "0:0"
     volumes:
-      - ${AIRFLOW_PROJ_DIR:-..}:/sources
+      - ${AIRFLOW_PROJ_DIR:?AIRFLOW_PROJ_DIR is required}:/sources
 
 volumes:
   postgres-db-volume:

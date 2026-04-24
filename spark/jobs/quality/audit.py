@@ -68,12 +68,19 @@ logging.basicConfig(
 logger = logging.getLogger("green-ai.audit")
 
 
+def require_env(var_name: str) -> str:
+    value = os.getenv(var_name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"Missing required environment variable: {var_name}")
+    return value
+
+
 # ===========================================================================
 # 1. CONFIGURACIÓN CENTRALIZADA
 # ===========================================================================
 
-BRONZE_BUCKET: str = os.getenv("S3_BRONZE_BUCKET", "green-ai-pf-bronze-a0e96d06")
-SILVER_BUCKET: str = os.getenv("S3_SILVER_BUCKET", "green-ai-pf-silver-a0e96d06")
+BRONZE_BUCKET: str = require_env("S3_BRONZE_BUCKET")
+SILVER_BUCKET: str = require_env("S3_SILVER_BUCKET")
 BRONZE: str = f"s3a://{BRONZE_BUCKET}"
 SILVER: str = f"s3a://{SILVER_BUCKET}"
 
@@ -263,13 +270,33 @@ def _bronze_path_exists(path: str) -> bool:
 
 
 def _silver_table_exists(spark: SparkSession, path: str) -> bool:
-    """True si la tabla Delta Silver existe y es legible."""
+    """True si la tabla Delta Silver existe y tiene al menos un commit."""
+    bucket, key = _parse_s3_path(path)
+    delta_log_prefix = f"{key.rstrip('/')}/_delta_log"
+
+    # Fast-path con S3: una tabla Delta inicializada debe tener al menos
+    # un commit JSON dentro de _delta_log (00000000000000000000.json, ...).
+    if not _s3_prefix_has_objects(bucket, delta_log_prefix):
+        return False
+
+    s3 = boto3.client("s3")
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix=delta_log_prefix.rstrip("/") + "/", MaxKeys=200)
+    contents = resp.get("Contents", [])
+    has_json_commit = any(obj.get("Key", "").endswith(".json") for obj in contents)
+    if not has_json_commit:
+        return False
+
     try:
         spark.read.format("delta").load(path).limit(0).count()
         return True
     except Exception as e:
         err = str(e)
-        if "DELTA_TABLE_NOT_FOUND" in err or "PATH_NOT_FOUND" in err:
+        if (
+            "DELTA_TABLE_NOT_FOUND" in err
+            or "PATH_NOT_FOUND" in err
+            or "WITHOUT_METADATA" in err
+            or "version=-1" in err
+        ):
             return False
         raise
 
@@ -549,7 +576,6 @@ AUDIT_LOG_SCHEMA = StructType([
 def persist_audit_log(spark: SparkSession, results: list[AuditResult]) -> None:
     """
     Persiste el log de auditoría en Delta (Silver) de forma idempotente.
-    Usa PyArrow (pandas bridge) para evitar el bug de cloudpickle en Python 3.12+.
     La escritura usa replaceWhere para sobrescribir sólo la partición del día.
     """
     run_date_str = results[0].run_timestamp.strftime("%Y-%m-%d") if results else \
@@ -569,9 +595,9 @@ def persist_audit_log(spark: SparkSession, results: list[AuditResult]) -> None:
         for r in results
     ]
 
-    pdf = pd.DataFrame(rows)
     df_log = (
-        spark.createDataFrame(pdf, schema=AUDIT_LOG_SCHEMA)
+        # Evita la ruta pandas->Spark que introduce NaN float en enteros nullable.
+        spark.createDataFrame(rows, schema=AUDIT_LOG_SCHEMA)
         .withColumn("run_date", F.to_date("run_timestamp"))
     )
 
@@ -666,11 +692,8 @@ def _build_spark() -> SparkSession:
                 "org.apache.hadoop:hadoop-aws:3.3.4,"
                 "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
                 "software.amazon.awssdk:bundle:2.20.18")
-        # Credenciales S3
-        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID", ""))
-        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY", ""))
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
-                "com.amazonaws.auth.EnvironmentVariableCredentialsProvider")
+                "com.amazonaws.auth.DefaultAWSCredentialsProviderChain")
         # Fix Hadoop 3.3.4 — timeouts como milisegundos (no sufijos "s")
         .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
         .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")

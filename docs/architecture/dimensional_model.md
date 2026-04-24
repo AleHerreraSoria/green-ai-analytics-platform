@@ -2,7 +2,7 @@
 
 ## Resumen
 
-Este documento define el modelo dimensional propuesto para la plataforma Green AI Analytics Platform. Está diseñado para dar soporte a las preguntas de negocio descritas en `docs/PREGUNTAS_DE_NEGOCIO.md` mediante la estructuración de las tablas finales Gold en hechos y dimensiones que cubren:
+Este documento define el modelo dimensional propuesto para la plataforma Green AI Analytics Platform. Está diseñado para dar soporte a las preguntas de negocio descritas en `business_questions.md` mediante la estructuración de las tablas finales Gold en hechos y dimensiones que cubren:
 
 - Uso de cómputo de IA (sesiones, energía, costos, emisiones)
 - Intensidad de carbono y mix eléctrico (datos horarios)

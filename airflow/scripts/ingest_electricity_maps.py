@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import os
 import sys
 import time
@@ -91,6 +92,37 @@ def _load_zones_from_csv(path: Path) -> list[str]:
             z = (row.get("electricity_maps_zone") or "").strip()
             if z:
                 out.add(z)
+    return sorted(out)
+
+
+def _load_zones_from_s3(
+    *,
+    bucket: str,
+    key: str,
+    profile: str | None,
+    region: str | None,
+) -> list[str]:
+    if boto3 is None:
+        print("[error] instala boto3 para leer zonas desde S3.", file=sys.stderr)
+        return []
+    session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+    s3 = session.client("s3", region_name=region or None)
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        content = obj["Body"].read().decode("utf-8")
+    except (ClientError, BotoCoreError, OSError, KeyError) as e:
+        print(f"[error] no se pudo leer s3://{bucket}/{key}: {e}", file=sys.stderr)
+        return []
+
+    out: set[str] = set()
+    reader = csv.DictReader(io.StringIO(content))
+    if "electricity_maps_zone" not in (reader.fieldnames or []):
+        print("[error] falta columna electricity_maps_zone en el CSV de S3.", file=sys.stderr)
+        return []
+    for row in reader:
+        z = (row.get("electricity_maps_zone") or "").strip()
+        if z:
+            out.add(z)
     return sorted(out)
 
 
@@ -232,6 +264,16 @@ def main() -> int:
         help="CSV con electricity_maps_zone.",
     )
     parser.add_argument(
+        "--zones-s3-bucket",
+        default=None,
+        help="Bucket S3 para CSV de zonas (alternativa sin disco a --zones-csv).",
+    )
+    parser.add_argument(
+        "--zones-s3-key",
+        default="reference/geo_cloud_to_country_and_zones.csv",
+        help="Clave S3 del CSV de zonas (solo con --zones-s3-bucket).",
+    )
+    parser.add_argument(
         "--zone",
         action="append",
         dest="zones_override",
@@ -332,6 +374,13 @@ def main() -> int:
 
     if args.zones_override:
         zones = sorted({z.strip() for z in args.zones_override if z.strip()})
+    elif args.zones_s3_bucket:
+        zones = _load_zones_from_s3(
+            bucket=args.zones_s3_bucket,
+            key=args.zones_s3_key,
+            profile=args.profile,
+            region=args.region,
+        )
     else:
         zones = _load_zones_from_csv(Path(args.zones_csv))
 

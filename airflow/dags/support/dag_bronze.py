@@ -2,10 +2,12 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.providers.ssh.operators.ssh import SSHOperator
 import pendulum
-import os
+from config.settings import S3_BRONZE_BUCKET
+from config.settings import SPARK_REPO_PATH
+from config.settings import SPARK_SUBMIT_BIN
+from config.settings import SPARK_SUBMIT_EXTRA_ARGS
+from config.settings import SPARK_SSH_CONN_ID
 
-SPARK_SSH_CONN_ID = "spark_ssh"
-SPARK_REPO_PATH = os.getenv("SPARK_REPO_PATH", "/opt/green-ai-analytics-platform/spark")
 
 
 with DAG(
@@ -25,7 +27,7 @@ with DAG(
             "/opt/airflow/bronze/reference/ && "
             "python3 /opt/airflow/scripts/ingest_electricity_maps.py "
             "--mode latest "
-            "--bucket ${S3_BRONZE_BUCKET:-green-ai-pf-bronze-a0e96d06}"
+            f"--bucket {S3_BRONZE_BUCKET}"
         ),
     )
 
@@ -34,8 +36,8 @@ with DAG(
         ssh_conn_id=SPARK_SSH_CONN_ID,
         command=(
             f"cd {SPARK_REPO_PATH} && "
-            "export S3_BRONZE_BUCKET=${S3_BRONZE_BUCKET:-green-ai-pf-bronze-a0e96d06} && "
-            "spark-submit jobs/quality/bronze_validations.py"
+            f"export S3_BRONZE_BUCKET={S3_BRONZE_BUCKET} && "
+            f"{SPARK_SUBMIT_BIN} {SPARK_SUBMIT_EXTRA_ARGS} jobs/quality/bronze_validations.py"
         ),
         cmd_timeout=1800,
     )
