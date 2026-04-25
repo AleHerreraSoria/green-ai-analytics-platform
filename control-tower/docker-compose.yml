@@ -1,0 +1,11 @@
+services:
+  control-tower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: control-tower
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    restart: unless-stopped
