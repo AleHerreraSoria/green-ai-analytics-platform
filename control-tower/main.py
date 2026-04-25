@@ -22,59 +22,74 @@ def inject_styles() -> None:
     st.markdown(
         """
         <style>
-          .block-container { padding-top: 1.2rem; padding-bottom: 3rem; max-width: 1180px; }
+          /* Más ancho y tipografía base algo mayor: sin sidebar el contenido usa casi todo el viewport */
+          .main .block-container {
+            padding-top: 1.25rem;
+            padding-bottom: 3rem;
+            max-width: min(96vw, 1720px);
+            padding-left: clamp(1rem, 3vw, 2.5rem);
+            padding-right: clamp(1rem, 3vw, 2.5rem);
+            font-size: 1.08rem;
+          }
+          .main h2 { font-size: 1.55rem !important; }
+          .main h3 { font-size: 1.2rem !important; }
           div[data-testid="stExpander"] details summary p {
             font-weight: 600;
             letter-spacing: 0.02em;
+            font-size: 1.05rem;
           }
           .ga-hero {
             background: radial-gradient(1200px 500px at 10% -10%, rgba(222,255,154,0.22), transparent 55%),
                         radial-gradient(900px 400px at 90% 0%, rgba(222,255,154,0.12), transparent 50%),
                         linear-gradient(135deg, #151515 0%, #0b0b0b 100%);
             border: 1px solid rgba(222,255,154,0.25);
-            border-radius: 18px;
-            padding: 1.75rem 1.75rem 1.5rem 1.75rem;
-            margin-bottom: 1.25rem;
+            border-radius: 20px;
+            padding: 2.1rem 2.25rem 1.85rem 2.25rem;
+            margin-bottom: 1.5rem;
           }
           .ga-hero h1 {
-            font-size: clamp(1.75rem, 2.6vw, 2.35rem);
-            line-height: 1.15;
-            margin: 0 0 0.5rem 0;
+            font-size: clamp(2rem, 3.2vw, 2.85rem);
+            line-height: 1.12;
+            margin: 0 0 0.6rem 0;
             color: #f7fff0;
           }
           .ga-hero p.lead {
             color: #d6d6d6;
-            font-size: 1.05rem;
-            max-width: 52rem;
+            font-size: clamp(1.08rem, 1.35vw, 1.22rem);
+            max-width: 62rem;
             margin: 0;
+            line-height: 1.55;
           }
           .ga-pill {
             display: inline-block;
-            padding: 0.35rem 0.75rem;
+            padding: 0.4rem 0.9rem;
             border-radius: 999px;
             border: 1px solid rgba(222,255,154,0.45);
             color: #111;
             background: #deff9a;
-            font-size: 0.78rem;
+            font-size: 0.82rem;
             font-weight: 700;
             letter-spacing: 0.04em;
             text-transform: uppercase;
-            margin-bottom: 0.75rem;
+            margin-bottom: 0.85rem;
           }
           .ga-card {
             background: #161616;
             border: 1px solid #2a2a2a;
-            border-radius: 14px;
-            padding: 1rem 1.1rem;
+            border-radius: 16px;
+            padding: 1.2rem 1.25rem;
             height: 100%;
           }
-          .ga-card h3 { margin: 0 0 0.35rem 0; font-size: 1.05rem; color: #deff9a; }
-          .ga-card p { margin: 0; color: #cfcfcf; font-size: 0.92rem; line-height: 1.45; }
+          .ga-card h3 { margin: 0 0 0.4rem 0; font-size: 1.12rem; color: #deff9a; }
+          .ga-card p { margin: 0; color: #cfcfcf; font-size: 1rem; line-height: 1.5; }
           .ga-foot {
             color: #9a9a9a;
-            font-size: 0.85rem;
+            font-size: 0.95rem;
             margin-top: 2rem;
           }
+          /* Métricas del hero un poco más legibles */
+          div[data-testid="stMetricValue"] { font-size: 1.85rem !important; }
+          div[data-testid="stMetricLabel"] { font-size: 1rem !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -136,13 +151,13 @@ st.markdown(hero, unsafe_allow_html=True)
 
 c1, c2, c3, c4 = st.columns(4)
 with c1:
-    st.metric("Capa Medallion", "Bronze activa", "Silver/Gold en roadmap")
+    st.metric("Patrón de diseño", "Arquitectura Medallion", "Bronze/Silver/Gold")
 with c2:
-    st.metric("Orquestación", "Airflow 2.8 (Compose)", "DAGs: pendientes en repo")
+    st.metric("Orquestación", "Airflow 2.8", "DAGs: Ejecutables desde la UI")
 with c3:
-    st.metric("Infraestructura", "Terraform + S3", "EC2 según IaC")
+    st.metric("Infraestructura", "Terraform/AWS", "EC2 + S3")
 with c4:
-    st.metric("Visualización", "Streamlit (PoC)", "Power BI: opcional")
+    st.metric("Visualización", "Streamlit (PoC)", "Pipeline Live")
 
 st.divider()
 
@@ -230,7 +245,7 @@ vcol1, vcol2 = st.columns((1.15, 1), gap="large")
 
 with vcol1:
     st.subheader("Video de contexto")
-    youtube_embed(YOUTUBE_EMBED_ID, height=400)
+    youtube_embed(YOUTUBE_EMBED_ID, height=520)
 
 with vcol2:
     st.subheader("Interactividad ligera")
@@ -285,7 +300,6 @@ st.markdown(
 )
 
 st.markdown(
-    '<p class="ga-foot">Green AI Analytics Platform — proyecto académico Data Engineering. '
-    "Revisá licencias de datasets externos antes de redistribuir datos o derivados.</p>",
+    '<p class="ga-foot">Green AI Analytics Platform — proyecto académico Data Engineering. ',
     unsafe_allow_html=True,
 )
