@@ -181,6 +181,7 @@ def render_pipeline_timeline(
             transition: left 900ms ease;
             animation: pulseGlow 1600ms infinite;
           }
+          .line-object.at-start { transform: translate(0, -50%); }
           @keyframes pulseGlow {
             0% { box-shadow: 0 0 10px rgba(222,255,154,0.4); }
             50% { box-shadow: 0 0 22px rgba(222,255,154,0.8); }
@@ -265,7 +266,8 @@ def render_pipeline_timeline(
 
     tracks = pipeline_tracks_manual_run(snapshot, tracked_manual_run_id)
     progress_pct = int(snapshot.overall_progress * 100) if tracks else 0
-    object_left = min(max(progress_pct, 2), 100)
+    object_left = min(max(progress_pct, 0), 100)
+    object_at_start = progress_pct <= 0
 
     completion_block = ""
     if show_completion_hero:
@@ -279,7 +281,7 @@ def render_pipeline_timeline(
         f"{completion_block}"
         f'<div class="line-wrap"><div class="line-track">'
         f'<div class="line-progress" style="width:{progress_pct}%;"></div>'
-        f'<div class="line-object" style="left:{object_left}%;"></div>'
+        f'<div class="line-object{" at-start" if object_at_start else ""}" style="left:{object_left}%;"></div>'
         f"</div></div>"
     )
 
