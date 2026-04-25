@@ -36,6 +36,7 @@ Para mantener la coherencia y profesionalismo de la interfaz, todos los miembros
   * `AIRFLOW_POLL_INTERVAL_SECONDS`
   * `STREAM_HEARTBEAT_SECONDS`
 * `control-tower` asume despliegue en una instancia separada y conecta con Airflow por API HTTPS.
+* Disparo manual del DAG desde la UI: `PIPELINE_ALLOW_MANUAL_TRIGGER=true` (habilita el botón en Pipeline Live; el usuario de la API debe poder crear `dagRuns`).
 * Si el stream no es estable, la página degrada automáticamente a modo polling sin romper la UI.
 
 ---

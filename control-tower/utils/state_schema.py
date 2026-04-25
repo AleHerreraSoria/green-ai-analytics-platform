@@ -46,6 +46,8 @@ class PipelineSnapshot:
     last_updated_at: str
     source_mode: str = "push"
     message: str | None = None
+    run_started_at: str | None = None
+    run_ended_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +60,8 @@ class PipelineSnapshot:
             "last_updated_at": self.last_updated_at,
             "source_mode": self.source_mode,
             "message": self.message,
+            "run_started_at": self.run_started_at,
+            "run_ended_at": self.run_ended_at,
         }
 
 
