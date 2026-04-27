@@ -246,11 +246,21 @@ class AirflowStateClient:
 
     def _latest_run(self) -> dict[str, Any] | None:
         encoded_dag = quote(self.config.dag_id, safe="")
-        payload = self._request_json(
-            f"/api/v1/dags/{encoded_dag}/dagRuns?order_by=-start_date&limit=1"
-        )
-        runs = payload.get("dag_runs", [])
-        return runs[0] if runs else None
+        # `start_date` puede ser `null` en runs recién creados (queued),
+        # lo que hace que el orden no siempre refleje el run más nuevo.
+        # Priorizamos `logical_date` y mantenemos fallbacks para compatibilidad.
+        order_candidates = ("-logical_date", "-execution_date", "-start_date")
+        for order_by in order_candidates:
+            try:
+                payload = self._request_json(
+                    f"/api/v1/dags/{encoded_dag}/dagRuns?order_by={order_by}&limit=1"
+                )
+                runs = payload.get("dag_runs", [])
+                if runs:
+                    return runs[0]
+            except RuntimeError:
+                continue
+        return None
 
     def _task_instances(self, run_id: str) -> dict[str, dict[str, Any]]:
         encoded_dag = quote(self.config.dag_id, safe="")

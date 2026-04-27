@@ -620,6 +620,150 @@ def render_pipeline_timeline(
         progress_pct=progress_pct,
         object_left=object_left,
         show_completion_hero=show_completion_hero,
+    st.markdown(
+        """
+        <style>
+          .pipeline-shell {
+            background: linear-gradient(160deg, rgba(18,18,18,1) 0%, rgba(12,12,12,1) 100%);
+            border: 1px solid rgba(222,255,154,0.22);
+            border-radius: 16px;
+            padding: 1.1rem 1.1rem 1.3rem;
+            margin: 0.4rem 0 0.8rem 0;
+          }
+          .pipeline-top { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+          .pipeline-top h3 { margin: 0; color: #f6ffe6; font-size: 1.08rem; font-weight: 700; }
+          .pipeline-status {
+            font-size: 0.78rem; font-weight: 700; border-radius: 999px; padding: 0.27rem 0.65rem;
+            border: 1px solid transparent; letter-spacing: 0.03em;
+          }
+          .status-waiting { background: rgba(145,145,145,0.16); color: #d9d9d9; border-color: rgba(145,145,145,0.4); }
+          .status-running { background: rgba(70,150,255,0.15); color: #8fc4ff; border-color: rgba(70,150,255,0.5); }
+          .status-done { background: rgba(91,196,112,0.14); color: #85e09a; border-color: rgba(91,196,112,0.46); }
+          .status-error { background: rgba(245,96,96,0.14); color: #ff8f8f; border-color: rgba(245,96,96,0.46); }
+          .status-retry { background: rgba(255,180,70,0.15); color: #ffc579; border-color: rgba(255,180,70,0.52); }
+          .line-wrap { position: relative; margin: 1.2rem 0 0.5rem; }
+          .line-track {
+            position: relative; width: 100%; height: 8px; border-radius: 999px;
+            background: linear-gradient(90deg, #2a2a2a 0%, #363636 100%);
+            border: 1px solid #3d3d3d;
+          }
+          .line-progress {
+            position: absolute; top: 0; left: 0; height: 100%; border-radius: 999px;
+            background: linear-gradient(90deg, #9edc68 0%, #deff9a 100%);
+            box-shadow: 0 0 18px rgba(222,255,154,0.35);
+            transition: width 900ms ease;
+          }
+          .line-object {
+            position: absolute; top: 50%; transform: translate(-50%, -50%);
+            width: 18px; height: 18px; border-radius: 50%;
+            background: radial-gradient(circle at 30% 30%, #fff8d8, #deff9a 55%, #8abf50 100%);
+            border: 2px solid rgba(9,9,9,0.5);
+            box-shadow: 0 0 18px rgba(222,255,154,0.58);
+            transition: left 900ms ease;
+            animation: pulseGlow 1600ms infinite;
+          }
+          .line-object.at-start { transform: translate(0, -50%); }
+          @keyframes pulseGlow {
+            0% { box-shadow: 0 0 10px rgba(222,255,154,0.4); }
+            50% { box-shadow: 0 0 22px rgba(222,255,154,0.8); }
+            100% { box-shadow: 0 0 10px rgba(222,255,154,0.4); }
+          }
+          .stage-grid {
+            margin-top: 0.9rem;
+            display: grid; gap: 0.45rem;
+            grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+          }
+          .stage-card {
+            border: 1px solid #2d2d2d; background: #181818; border-radius: 12px; padding: 0.65rem 0.55rem 0.6rem;
+            min-height: 72px;
+          }
+          .stage-head {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.45rem;
+            text-align: center;
+          }
+          .stage-medal {
+            width: 2.15rem;
+            height: 2.15rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.12rem;
+            line-height: 1;
+            border: 1px solid rgba(255,255,255,0.12);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.35);
+          }
+          .medal-bronze {
+            background: radial-gradient(circle at 32% 28%, #e8a060, #8b4513 58%, #4a2509 100%);
+          }
+          .medal-silver {
+            background: radial-gradient(circle at 32% 28%, #f2f2f2, #a8aeb8 55%, #5c636b 100%);
+          }
+          .medal-gold {
+            background: radial-gradient(circle at 32% 28%, #fff4b8, #e8c547 50%, #a67c00 100%);
+          }
+          .stage-body {
+            width: 100%;
+            text-align: center;
+          }
+          .stage-card .title {
+            margin: 0;
+            color: #ececec;
+            font-size: 0.84rem;
+            font-weight: 600;
+            line-height: 1.25;
+            text-align: center;
+          }
+          .stage-card .meta {
+            margin-top: 0.24rem;
+            font-size: 0.76rem;
+            color: #b8b8b8;
+            text-align: center;
+          }
+          .stage-card.running { border-color: rgba(94,175,255,0.6); }
+          .stage-card.done { border-color: rgba(91,196,112,0.62); }
+          .stage-card.error { border-color: rgba(245,96,96,0.62); }
+          .stage-card.retry { border-color: rgba(255,180,70,0.62); }
+          .completion-hero {
+            margin: 0.85rem 0 0.35rem 0;
+            padding: 0.85rem 1rem;
+            border-radius: 14px;
+            text-align: center;
+            font-size: clamp(1.35rem, 2.8vw, 1.85rem);
+            font-weight: 800;
+            line-height: 1.2;
+            color: #0d1408;
+            background: linear-gradient(120deg, #c8f090 0%, #deff9a 45%, #b8e86a 100%);
+            border: 1px solid rgba(222,255,154,0.85);
+            box-shadow: 0 0 28px rgba(222,255,154,0.28);
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tracks = pipeline_tracks_manual_run(snapshot, tracked_manual_run_id)
+    progress_pct = int(snapshot.overall_progress * 100) if tracks else 0
+    object_left = min(max(progress_pct, 0), 100)
+    object_at_start = progress_pct <= 0
+
+    completion_block = ""
+    if show_completion_hero:
+        completion_block = (
+            '<div class="completion-hero" role="status">¡Están listos tus datos!</div>'
+        )
+
+    pipeline_header = (
+        f'<div class="pipeline-shell">'
+        f'<div class="pipeline-top"><h3>{html.escape(snapshot.dag_id)}</h3>{_status_chip(snapshot)}</div>'
+        f"{completion_block}"
+        f'<div class="line-wrap"><div class="line-track">'
+        f'<div class="line-progress" style="width:{progress_pct}%;"></div>'
+        f'<div class="line-object{" at-start" if object_at_start else ""}" style="left:{object_left}%;"></div>'
+        f"</div></div>"
     )
 
     n_stages   = len(snapshot.stages)

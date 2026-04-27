@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html
 import os
+import time
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -21,6 +22,9 @@ from components.pipeline_timeline import (
 )
 from utils.airflow_state_client import AirflowStateClient, resolve_pipeline_dag_id
 from utils.realtime_stream import RealtimePipelineStream
+from utils.state_schema import PipelineSnapshot, StageState
+
+COMPLETION_RESET_DELAY_SECONDS = 20
 
 
 def _pipeline_metric_cell(label: str, value: str) -> str:
@@ -76,14 +80,24 @@ if manual_trigger_enabled:
         <style>
         /* Único botón de esta página: fondo negro fijo, texto lima; hover solo cambia color del texto */
         section[data-testid="stMain"] button[kind="tertiary"] {
-            min-height: 5.15rem !important;
-            padding-top: 0.72rem !important;
-            padding-bottom: 0.72rem !important;
+            min-height: 0 !important;
+            padding-top: 0.34rem !important;
+            padding-bottom: 0.34rem !important;
+            padding-left: 0.48rem !important;
+            padding-right: 0.48rem !important;
             background: #0a0a0a !important;
             background-color: #0a0a0a !important;
             border: 1px solid rgba(222, 255, 154, 0.32) !important;
             box-shadow: none !important;
             color: #deff9a !important;
+        }
+        section[data-testid="stMain"] div.stButton {
+            width: 100% !important;
+            display: flex !important;
+            justify-content: flex-end !important;
+        }
+        section[data-testid="stMain"] div.stButton > button[kind="tertiary"] {
+            margin-left: auto !important;
         }
         section[data-testid="stMain"] button[kind="tertiary"] p {
             font-size: 2.52rem !important;
@@ -120,11 +134,13 @@ if manual_trigger_enabled:
             "▶️ Ejecutar Pipeline",
             key="trigger_pipeline_dag",
             type="tertiary",
-            use_container_width=True,
+            use_container_width=False,
         ):
             try:
                 run_id = st.session_state.pipeline_stream.client.trigger_dag_run()
                 st.session_state["pipeline_celebrate_run_id"] = run_id
+                st.session_state.pop("pipeline_completion_ts", None)
+                st.session_state["pipeline_force_inactive_view"] = False
                 st.toast(f"Ejecución iniciada: {run_id}", icon="✅")
                 st.success(
                     f"Se disparó un nuevo run (`{run_id}`). El timeline se actualizará cuando Airflow lo tome."
@@ -144,22 +160,66 @@ if snapshot is None:
 else:
     celebrate_rid = st.session_state.get("pipeline_celebrate_run_id")
     tracks_manual = pipeline_tracks_manual_run(snapshot, celebrate_rid)
+    completion_ts = st.session_state.get("pipeline_completion_ts")
+    force_inactive_view = bool(st.session_state.get("pipeline_force_inactive_view", False))
+
+    if tracks_manual and snapshot.run_state in {"running", "retry"}:
+        # Si hay una nueva ejecución activa, salimos del modo inactivo forzado.
+        st.session_state["pipeline_force_inactive_view"] = False
+        force_inactive_view = False
+
+    if tracks_manual and snapshot.run_state == "done" and not force_inactive_view:
+        if completion_ts is None:
+            completion_ts = time.time()
+            st.session_state["pipeline_completion_ts"] = completion_ts
+        if (time.time() - completion_ts) >= COMPLETION_RESET_DELAY_SECONDS:
+            st.session_state["pipeline_force_inactive_view"] = True
+            st.session_state.pop("pipeline_completion_ts", None)
+            st.session_state.pop("pipeline_celebrate_run_id", None)
+            force_inactive_view = True
+    else:
+        st.session_state.pop("pipeline_completion_ts", None)
+
+    display_snapshot = snapshot
+    display_celebrate_rid = celebrate_rid
+    if force_inactive_view:
+        # Reinicio visual a estado inicial tras 20s de mostrar "pipeline finalizado".
+        display_snapshot = PipelineSnapshot(
+            dag_id=snapshot.dag_id,
+            run_id=None,
+            run_state="waiting",
+            stages=[
+                StageState(stage_id=s.stage_id, label=s.label, state="waiting")
+                for s in snapshot.stages
+            ],
+            current_stage_index=0,
+            overall_progress=0.0,
+            last_updated_at=snapshot.last_updated_at,
+            source_mode=snapshot.source_mode,
+            message="Esperando la próxima ejecución del pipeline.",
+            run_started_at=None,
+            run_ended_at=None,
+        )
+        display_celebrate_rid = None
+
     show_completion_hero = (
         snapshot.run_state == "done"
         and snapshot.run_id is not None
         and celebrate_rid is not None
         and celebrate_rid == snapshot.run_id
+        and not force_inactive_view
     )
     render_pipeline_timeline(
-        snapshot,
+        display_snapshot,
         show_completion_hero=show_completion_hero,
-        tracked_manual_run_id=celebrate_rid,
+        tracked_manual_run_id=display_celebrate_rid,
     )
 
-    progress_pct = int(snapshot.overall_progress * 100) if tracks_manual else 0
-    time_label, time_value = pipeline_timer_metric(snapshot, celebrate_rid)
-    live_mode = "Push" if snapshot.source_mode == "push" else "Fallback polling"
-    last_upd = snapshot.last_updated_at[:19].replace("T", " ")
+    tracks_display_run = pipeline_tracks_manual_run(display_snapshot, display_celebrate_rid)
+    progress_pct = int(display_snapshot.overall_progress * 100) if tracks_display_run else 0
+    time_label, time_value = pipeline_timer_metric(display_snapshot, display_celebrate_rid)
+    live_mode = "Push" if display_snapshot.source_mode == "push" else "Fallback polling"
+    last_upd = display_snapshot.last_updated_at[:19].replace("T", " ")
 
     st.markdown(
         """
