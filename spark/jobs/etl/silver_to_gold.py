@@ -5,12 +5,14 @@ Capa Gold — Modelo Dimensional Kimball (Esquema Estrella)
 Plataforma: Green AI Analytics Platform
 
 Parte 1: Configuración de Spark e idempotencia + funciones de dimensiones.
-Parte 2: Funciones de hechos (a completar en la siguiente iteración).
+Parte 2: Funciones de hechos.
 
 Convenciones:
   - Surrogate Keys: md5() sobre la clave natural en lowercase / trimmed.
-  - Escritura de dimensiones: mode("overwrite") total (sin partición).
-  - Escritura de hechos: mode("overwrite") con partitionBy() + dynamic overwrite.
+  - Escritura Gold: MERGE nativo de Delta Lake (idempotente).
+      · Primera ejecución (bootstrap): .write.format("delta").save()
+      · Ejecuciones subsiguientes: DeltaTable.merge() ON <surrogate/natural key>
+        → whenMatchedUpdateAll() / whenNotMatchedInsertAll()
   - Tipos estrictos en todos los casts de salida.
   - Bloques try/except por función para aislamiento de fallos.
 
@@ -25,6 +27,7 @@ import logging
 import os
 import sys
 
+from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, IntegerType, StringType
@@ -116,13 +119,123 @@ spark.sparkContext.setLogLevel("WARN")
 logger.info("SparkSession iniciada. partitionOverwriteMode=dynamic ✓")
 
 # =============================================================================
+# HELPER CENTRAL DE ESCRITURA GOLD — MERGE idempotente
+# =============================================================================
+
+def _merge_gold(
+    df: DataFrame,
+    path: str,
+    merge_keys: list[str],
+    partition_by: list[str] | None = None,
+) -> None:
+    """
+    Escritura idempotente sobre una tabla Gold Delta usando MERGE nativo
+    con optimización de Partition Pruning.
+
+    Flujo:
+      1. Si la tabla Delta NO existe (primera ejecución / bootstrap):
+         escribe directamente con .write.format("delta"), aplicando el
+         particionado indicado. Equivalente al overwrite anterior.
+
+      2. Si la tabla YA EXISTE:
+         ejecuta MERGE con condición en dos niveles:
+
+         Nivel 1 — Partition Pruning (sólo para tablas particionadas):
+           Se recolectan los valores distintos de cada columna de partición
+           presentes en el lote source y se inyectan como predicados IN
+           sobre el target. Delta descarta particiones que no coincidan
+           ANTES de abrir ningún archivo, evitando full table scans.
+
+         Nivel 2 — Row-level join:
+           Las merge_keys identifican la fila exacta dentro de las
+           particiones ya podadas (equi-join exacto).
+
+         WHEN MATCHED     → UPDATE SET *
+         WHEN NOT MATCHED → INSERT *
+
+    Parámetros
+    ----------
+    df          : DataFrame con los datos transformados listos para Gold.
+    path        : Ruta S3 de la tabla Delta de destino.
+    merge_keys  : Columnas que forman el equi-join de la condición ON.
+    partition_by: Columnas de partición (bootstrap) y de pruning (MERGE).
+                  Si es None o vacía, no se aplica pruning (dimensiones sin
+                  partición funcionan correctamente sin cambio de firma).
+    """
+    if not DeltaTable.isDeltaTable(spark, path):
+        # ── Bootstrap: primera escritura de la tabla ─────────────────────────
+        logger.info("[MERGE-GOLD] Bootstrap (tabla nueva): %s", path)
+        writer = df.write.format("delta")
+        if partition_by:
+            writer = writer.partitionBy(*partition_by)
+        writer.save(path)
+        return
+
+    # ── MERGE: escritura idempotente sobre tabla existente ───────────────────
+    logger.info(
+        "[MERGE-GOLD] Ejecutando MERGE sobre '%s' con keys=%s partition_by=%s",
+        path, merge_keys, partition_by or [],
+    )
+
+    # ── Construcción de la condición MERGE en dos niveles ─────────────────
+    # Nivel 1 — Partition Pruning: predicados IN sobre columnas de partición
+    # derivados de los valores distintos presentes en el lote SOURCE.
+    # Delta descarta particiones no relevantes antes de abrir ningún archivo.
+    # Nivel 2 — Row-level join: equi-join exacto sobre merge_keys.
+    # ────────────────────────────────────────────────────────────────────────
+
+    # ── Deduplicar source por merge_keys (requisito de Delta MERGE) ──────────
+    # Delta exige source sin duplicados por clave de merge.
+    df = df.dropDuplicates(merge_keys)
+
+    pruning_clauses: list[str] = []
+    effective_partition_cols = [
+        p for p in (partition_by or []) if p not in merge_keys
+    ]
+    if effective_partition_cols:
+        source_cols = set(df.columns)
+        for part_col in effective_partition_cols:
+            if part_col not in source_cols:
+                logger.warning(
+                    "[MERGE-GOLD] Columna de partición '%s' no encontrada en "
+                    "el source DataFrame; pruning omitido para esta columna.",
+                    part_col,
+                )
+                continue
+            distinct_vals = [
+                row[part_col]
+                for row in df.select(part_col).distinct().collect()
+                if row[part_col] is not None
+            ]
+            if not distinct_vals:
+                continue
+            if isinstance(distinct_vals[0], str):
+                in_list = ", ".join(f"'{v}'" for v in distinct_vals)
+            else:
+                in_list = ", ".join(str(v) for v in distinct_vals)
+            pruning_clauses.append(f"target.`{part_col}` IN ({in_list})")
+
+    key_clauses = [f"target.`{k}` = source.`{k}`" for k in merge_keys]
+    merge_condition = " AND ".join(pruning_clauses + key_clauses)
+
+    (
+        DeltaTable.forPath(spark, path)
+        .alias("target")
+        .merge(df.alias("source"), merge_condition)
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+
+
+# =============================================================================
 # PARTE 1 — FUNCIONES DE DIMENSIONES (Kimball)
 # =============================================================================
 # Cada función:
 #   1. Lee la(s) tabla(s) Silver necesarias.
 #   2. Genera la Surrogate Key con md5() sobre la clave natural.
 #   3. Selecciona y castea las columnas finales con tipos estrictos.
-#   4. Escribe en Gold con mode("overwrite") TOTAL (sin partición, tablas chicas).
+#   4. Escribe en Gold con MERGE idempotente ON surrogate key.
 #   5. Retorna el DataFrame Gold para uso posterior en los JOINs de hechos.
 # =============================================================================
 
@@ -177,13 +290,8 @@ def build_dim_country() -> DataFrame:
             F.col("income_group").cast(StringType()),
         )
 
-        # ── 4. Escribir en Gold (overwrite total; tabla pequeña) ──────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_country")
-        )
+        # ── 4. Escribir en Gold con MERGE idempotente ON country_id ──────────
+        _merge_gold(dim, f"{GOLD}/dim_country", merge_keys=["country_id"])
 
         row_count: int = dim.count()
         logger.info("[dim_country] OK — %d filas escritas en Gold.", row_count)
@@ -253,13 +361,8 @@ def build_dim_region() -> DataFrame:
             F.col("mapping_notes").cast(StringType()),
         )
 
-        # ── 4. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_region")
-        )
+        # ── 4. Escribir en Gold con MERGE idempotente ON region_id ───────────
+        _merge_gold(dim, f"{GOLD}/dim_region", merge_keys=["region_id"])
 
         row_count: int = dim.count()
         logger.info("[dim_region] OK — %d filas escritas en Gold.", row_count)
@@ -328,13 +431,8 @@ def build_dim_gpu_model() -> DataFrame:
             F.col("memory").cast(StringType()).alias("memory_spec"),
         )
 
-        # ── 5. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_gpu_model")
-        )
+        # ── 5. Escribir en Gold con MERGE idempotente ON gpu_id ──────────────
+        _merge_gold(dim, f"{GOLD}/dim_gpu_model", merge_keys=["gpu_id"])
 
         row_count: int = dim.count()
         logger.info("[dim_gpu_model] OK — %d filas escritas en Gold.", row_count)
@@ -395,13 +493,8 @@ def build_dim_instance_type() -> DataFrame:
             F.col("pricing_notes").cast(StringType()).alias("notes"),
         )
 
-        # ── 4. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_instance_type")
-        )
+        # ── 4. Escribir en Gold con MERGE idempotente ON instance_type_id ────
+        _merge_gold(dim, f"{GOLD}/dim_instance_type", merge_keys=["instance_type_id"])
 
         row_count: int = dim.count()
         logger.info("[dim_instance_type] OK — %d filas escritas en Gold.", row_count)
@@ -458,13 +551,8 @@ def build_dim_electricity_price() -> DataFrame:
             F.lit(None).cast(StringType()).alias("price_reference_date"),
         )
 
-        # ── 3. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_electricity_price")
-        )
+        # ── 3. Escribir en Gold con MERGE idempotente ON price_id ────────────
+        _merge_gold(dim, f"{GOLD}/dim_electricity_price", merge_keys=["price_id"])
 
         row_count: int = dim.count()
         logger.info("[dim_electricity_price] OK — %d filas escritas en Gold.", row_count)
@@ -680,13 +768,14 @@ def build_fact_ai_compute_usage() -> DataFrame:
             F.col("cost_compute_usd").cast(DoubleType()),
         )
 
-        # ── 8. Escribir en Gold con partición temporal ────────────────────────
-        (
-            fact.write
-            .format("delta")
-            .mode("overwrite")
-            .partitionBy("year", "month")
-            .save(f"{GOLD}/fact_ai_compute_usage")
+        # ── 8. Escribir en Gold con MERGE idempotente ON session_id ──────────
+        # Llave de unicidad: session_id (UUID único por sesión completa).
+        # Partición física: year, month (sólo aplicada en bootstrap).
+        _merge_gold(
+            fact,
+            f"{GOLD}/fact_ai_compute_usage",
+            merge_keys=["session_id"],
+            partition_by=["year", "month"],
         )
 
         row_count: int = fact.count()
@@ -787,13 +876,14 @@ def build_fact_carbon_intensity_hourly() -> DataFrame:
             F.col("carbon_intensity").cast(DoubleType()).alias("carbon_intensity_gco2eq_per_kwh"),
         )
 
-        # ── 5. Escribir en Gold ───────────────────────────────────────────────
-        (
-            fact.write
-            .format("delta")
-            .mode("overwrite")
-            .partitionBy("year", "month")
-            .save(f"{GOLD}/fact_carbon_intensity_hourly")
+        # ── 5. Escribir en Gold con MERGE idempotente ON (zone, event_ts) ────
+        # Llave compuesta: zona geográfica + timestamp del evento horario.
+        # Partición física: year, month (sólo aplicada en bootstrap).
+        _merge_gold(
+            fact,
+            f"{GOLD}/fact_carbon_intensity_hourly",
+            merge_keys=["zone", "event_ts"],
+            partition_by=["year", "month"],
         )
 
         row_count: int = fact.count()
@@ -903,13 +993,14 @@ def build_fact_country_energy_annual() -> DataFrame:
             (F.col("year") >= 1990) & (F.col("year") <= 2030)
         )
 
-        # ── 7. Escribir en Gold particionado por año ──────────────────────────
-        (
-            fact.write
-            .format("delta")
-            .mode("overwrite")
-            .partitionBy("year")
-            .save(f"{GOLD}/fact_country_energy_annual")
+        # ── 7. Escribir en Gold con MERGE idempotente ON (iso_alpha3, year) ──
+        # Llave compuesta: código de país ISO 3 + año del indicador.
+        # Partición física: year (sólo aplicada en bootstrap).
+        _merge_gold(
+            fact,
+            f"{GOLD}/fact_country_energy_annual",
+            merge_keys=["iso_alpha3", "year"],
+            partition_by=["year"],
         )
 
         row_count: int = fact.count()

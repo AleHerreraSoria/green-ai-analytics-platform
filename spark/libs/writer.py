@@ -4,11 +4,17 @@ writer.py
 Módulo centralizado de escritura en la capa Silver del proyecto Green AI.
 
 Responsabilidades:
-  - Estandarizar la escritura en formato Parquet con compresión Snappy.
+  - Estandarizar la escritura en formato Delta con compresión Snappy.
   - Aplicar la estrategia de particionado lógico por tipo de dataset.
   - Detectar y validar que el DataFrame no esté vacío antes de escribir.
+  - Implementar escritura idempotente mediante operaciones MERGE nativas de Delta.
   - Devolver metadata de escritura (conteo de filas, path) para el módulo
     de auditoría (audit.py).
+
+Estrategia de escritura:
+  - Primera ejecución (tabla no existe): bootstrap con .write.format("delta").
+  - Ejecuciones subsiguientes: MERGE (Upsert) sobre la llave natural del dataset,
+    garantizando idempotencia completa sin duplicados ni pérdida de datos.
 
 No contiene lógica de transformación. Se importa desde bronze_to_silver.py
 y puede ser reutilizado por cualquier job Silver futuro.
@@ -19,6 +25,7 @@ import logging
 import os
 from dataclasses import dataclass
 
+from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
@@ -48,7 +55,7 @@ PARTITION_STRATEGIES: dict[str, list[str]] = {
     "electricity_maps/carbon_intensity/past":    ["year", "month"],
     "electricity_maps/carbon_intensity/history": ["year", "month"],
     "electricity_maps/electricity_mix/latest":   ["year", "month"],
-    
+
     # Catálogos estáticos: Nunca se particionan. Son diminutos (KBs/MBs).
     "reference/zones_dimension": [],
     "global_petrol_prices":  [],
@@ -66,6 +73,44 @@ PARTITION_STRATEGIES: dict[str, list[str]] = {
 
     # 3. Logs de uso (Volumen Medio/Alto)
     "usage_logs":            ["year", "month"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Llaves de MERGE por dataset (llave natural inferida del esquema Silver)
+# ---------------------------------------------------------------------------
+# Estas columnas forman la condición ON del MERGE. Deben identificar
+# unívocamente cada fila en la tabla de destino.
+# Criterio: campos nullable=False del esquema + granularidad temporal cuando
+# el dataset tiene partición (series de tiempo).
+
+MERGE_KEYS: dict[str, list[str]] = {
+    # Series temporales — llave compuesta zona + timestamp de evento
+    "electricity_maps/carbon_intensity/latest":  ["zone", "datetime"],
+    "electricity_maps/carbon_intensity/past":    ["zone", "datetime"],
+    "electricity_maps/carbon_intensity/history": ["zone", "datetime"],
+    "electricity_maps/electricity_mix/latest":   ["zone", "datetime"],
+
+    # Catálogos de referencia — llave natural simple o compuesta
+    "reference/zones_dimension":    ["zone_key"],
+    "global_petrol_prices":         ["country"],
+    "reference/ec2_pricing":        [
+        "cloud_provider", "cloud_region", "instance_type",
+        "operating_system", "pricing_model",
+    ],
+    "reference/geo_cloud_mapping":  ["cloud_provider", "cloud_region"],
+    "mlco2/yearly_averages":        ["zone_key", "year"],
+    "mlco2/instances":              ["id"],
+    "mlco2/impact":                 ["region"],
+    "mlco2/gpus":                   ["gpu_model"],
+
+    # Macrodatos históricos — llave compuesta entidad + año
+    "owid":                         ["country", "year"],
+    "world_bank/ict_exports":       ["country_code", "year"],
+    "reference/world_bank_metadata": ["country_code"],
+
+    # Logs de sesión — session_id es UUID único por sesión completa
+    "usage_logs":                   ["session_id"],
 }
 
 
@@ -93,6 +138,142 @@ class WriteResult:
 
 
 # ---------------------------------------------------------------------------
+# Helper central de escritura idempotente (MERGE / bootstrap)
+# ---------------------------------------------------------------------------
+
+def _delta_merge(
+    spark: SparkSession,
+    df: DataFrame,
+    path: str,
+    merge_keys: list[str],
+    partition_by: list[str] | None = None,
+) -> None:
+    """
+    Escritura idempotente sobre una tabla Delta usando MERGE nativo.
+
+    Flujo:
+      1. Si la tabla Delta **no existe** (primera ejecución / bootstrap):
+         escribe directamente con .write.format("delta"), aplicando el
+         particionado configurado. Esto es equivalente al comportamiento
+         anterior pero con semántica de creación inicial.
+
+      2. Si la tabla **ya existe**:
+         ejecuta un MERGE ON <merge_keys> que:
+           - WHEN MATCHED         → UPDATE SET * (actualiza todos los campos)
+           - WHEN NOT MATCHED     → INSERT *     (inserta filas nuevas)
+         Garantiza idempotencia total: re-ejecuciones sobre los mismos datos
+         no generan duplicados ni pérdida de información.
+
+    Parámetros
+    ----------
+    spark       : SparkSession activa (requerida para DeltaTable.forPath).
+    df          : DataFrame transformado listo para escribir.
+    path        : Ruta S3 de la tabla Delta de destino.
+    merge_keys  : Columnas que forman la condición ON del MERGE.
+                  Deben identificar unívocamente cada fila.
+    partition_by: Columnas de partición Hive (sólo se aplican en bootstrap).
+                  En MERGE posteriores Delta gestiona las particiones
+                  automáticamente conforme a la definición original de la tabla.
+    """
+    if not DeltaTable.isDeltaTable(spark, path):
+        # ── Bootstrap: primera escritura de la tabla ─────────────────────────
+        logger.info("[MERGE] Bootstrap (tabla nueva): %s", path)
+        writer = df.write.format("delta").option("compression", "snappy")
+        if partition_by:
+            writer = writer.partitionBy(*partition_by)
+        writer.save(path)
+        return
+
+    # ── MERGE: escritura idempotente sobre tabla existente ───────────────────
+    logger.info(
+        "[MERGE] Ejecutando MERGE sobre '%s' con keys=%s partition_by=%s",
+        path, merge_keys, partition_by or [],
+    )
+
+    # ── Construcción de la condición MERGE en dos niveles ─────────────────
+    #
+    # Nivel 1 — Partition Pruning (sólo si la tabla está particionada):
+    #   Para cada columna de partición, se recolectan los valores distintos
+    #   presentes en el lote SOURCE y se inyectan como predicado IN sobre
+    #   la columna TARGET correspondiente.
+    #
+    #   Ejemplo para partition_by=["year","month"] con un lote de enero-2025:
+    #     target.`year` IN (2025) AND target.`month` IN (1)
+    #
+    #   Delta Lake interpreta estos predicados sobre columnas de partición
+    #   ANTES de abrir ningún archivo Parquet, descartando todas las
+    #   particiones que no coincidan (partition pruning a nivel de plan físico).
+    #   Esto convierte un full-table scan en una lectura dirigida.
+    #
+    # Nivel 2 — Row-level join:
+    #   Las merge_keys originales identifican la fila exacta dentro de las
+    #   particiones ya podadas. Sin el Nivel 1 estas llaves requerirían
+    #   escanear TODAS las particiones.
+    # ────────────────────────────────────────────────────────────────────────
+
+    # ── Deduplicar source por merge_keys (requisito de Delta MERGE) ──────────
+    # Delta exige que el source DataFrame tenga como máximo UNA fila por cada
+    # valor de la clave de merge. Si el source contiene duplicados por la clave
+    # (ej. el API de ElectricityMaps puede devolver el mismo (zone, datetime)
+    # más de una vez en un lote), Delta lanza:
+    #   multipleSourceRowMatchingTargetRowInMergeException
+    # dropDuplicates(merge_keys) resuelve esto de forma determinista:
+    # conserva la primera fila por clave según el orden del DataFrame.
+    df = df.dropDuplicates(merge_keys)
+
+    # Nivel 1: predicados de pruning derivados de las columnas de partición.
+    # Se excluyen columnas de partición que ya son merge_keys (evita redundancia).
+    pruning_clauses: list[str] = []
+    effective_partition_cols = [
+        p for p in (partition_by or []) if p not in merge_keys
+    ]
+    if effective_partition_cols:
+        source_cols = set(df.columns)
+        for part_col in effective_partition_cols:
+            if part_col not in source_cols:
+                # Columna de partición ausente en el source (ej. derivada
+                # externamente): se omite este predicado con aviso.
+                logger.warning(
+                    "[MERGE] Columna de partición '%s' no encontrada en el "
+                    "source DataFrame; pruning omitido para esta columna.",
+                    part_col,
+                )
+                continue
+            # Recolectar valores distintos del lote actual
+            distinct_vals = [
+                row[part_col]
+                for row in df.select(part_col).distinct().collect()
+                if row[part_col] is not None
+            ]
+            if not distinct_vals:
+                continue
+            # Formatear según tipo: strings van con comillas, numéricos sin ellas
+            if isinstance(distinct_vals[0], str):
+                in_list = ", ".join(f"'{v}'" for v in distinct_vals)
+            else:
+                in_list = ", ".join(str(v) for v in distinct_vals)
+            pruning_clauses.append(f"target.`{part_col}` IN ({in_list})")
+
+    # Nivel 2: equi-join sobre las llaves primarias / naturales del dataset
+    key_clauses = [
+        f"target.`{k}` = source.`{k}`" for k in merge_keys
+    ]
+
+    # Condición final: pruning (si aplica) AND equi-join de llave
+    all_clauses = pruning_clauses + key_clauses
+    merge_condition = " AND ".join(all_clauses)
+
+    (
+        DeltaTable.forPath(spark, path)
+        .alias("target")
+        .merge(df.alias("source"), merge_condition)
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+
+
+# ---------------------------------------------------------------------------
 # Writer principal
 # ---------------------------------------------------------------------------
 
@@ -104,20 +285,21 @@ class SilverWriter:
     ----------
     silver_bucket : str
         Nombre del bucket S3 de destino (ej. 'green-ai-pf-silver-a0e96d06').
-    mode : str
-        Modo de escritura Spark ('overwrite' por defecto; también 'append').
+    spark : SparkSession
+        Sesión Spark activa, requerida para las operaciones MERGE de Delta.
     """
 
-    def __init__(self, silver_bucket: str, mode: str = "overwrite"):
+    def __init__(self, silver_bucket: str, spark: SparkSession):
         self.silver_bucket = silver_bucket
-        self.mode = mode
+        self.spark = spark
 
     def _build_path(self, dataset_key: str) -> str:
         return f"s3a://{self.silver_bucket}/{dataset_key}"
 
     def write(self, df: DataFrame, dataset_key: str) -> WriteResult:
         """
-        Escribe el DataFrame en la ruta Silver correspondiente al dataset_key.
+        Escribe el DataFrame en la ruta Silver correspondiente al dataset_key
+        usando una operación MERGE idempotente de Delta Lake.
 
         Parámetros
         ----------
@@ -141,6 +323,13 @@ class SilverWriter:
             )
             partition_by = []
 
+        merge_keys = MERGE_KEYS.get(dataset_key)
+        if merge_keys is None:
+            logger.warning(
+                "dataset_key '%s' sin MERGE_KEYS definidas. Se usará overwrite como fallback.",
+                dataset_key,
+            )
+
         # Verificar que el DataFrame no esté vacío
         if df.isEmpty():
             logger.warning("DataFrame vacío para '%s'; escritura omitida.", dataset_key)
@@ -161,17 +350,26 @@ class SilverWriter:
                 # al intentar abrir cientos de conexiones S3A y archivos simultáneamente.
                 df = df.repartition(1, *partition_by)
 
-            writer = (
-                df.write
-                .mode(self.mode)
-                .format("delta")
-                .option("compression", "snappy")
-            )
-
-            if partition_by:
-                writer = writer.partitionBy(*partition_by)
-
-            writer.save(silver_path)
+            if merge_keys:
+                # ── Escritura idempotente con MERGE nativo de Delta ────────
+                _delta_merge(
+                    spark=self.spark,
+                    df=df,
+                    path=silver_path,
+                    merge_keys=merge_keys,
+                    partition_by=partition_by if partition_by else None,
+                )
+            else:
+                # ── Fallback: overwrite (dataset sin MERGE_KEYS definidas) ─
+                writer = (
+                    df.write
+                    .format("delta")
+                    .mode("overwrite")
+                    .option("compression", "snappy")
+                )
+                if partition_by:
+                    writer = writer.partitionBy(*partition_by)
+                writer.save(silver_path)
 
             rows_written = df.count()
 
@@ -225,14 +423,23 @@ class SilverWriter:
 def write_to_silver(
     df: DataFrame,
     dataset_key: str,
+    spark: SparkSession | None = None,
     silver_bucket: str | None = None,
-    mode: str = "overwrite",
 ) -> WriteResult:
     """
     Wrapper funcional sobre SilverWriter para uso directo en bronze_to_silver.py.
+
+    Parámetros
+    ----------
+    df          : DataFrame transformado.
+    dataset_key : Clave de destino Silver (debe existir en MERGE_KEYS).
+    spark       : SparkSession activa. Requerida para las operaciones MERGE.
+                  Si no se provee, se obtiene la sesión activa con getOrCreate().
+    silver_bucket : Bucket S3 Silver. Si None, lee S3_SILVER_BUCKET del entorno.
     """
+    active_spark = spark or SparkSession.builder.getOrCreate()
     bucket = silver_bucket or require_env("S3_SILVER_BUCKET")
-    writer = SilverWriter(silver_bucket=bucket, mode=mode)
+    writer = SilverWriter(silver_bucket=bucket, spark=active_spark)
     return writer.write(df, dataset_key)
 
 
@@ -243,11 +450,12 @@ def write_to_silver(
 if __name__ == "__main__":
     import sys
 
-    # En modo CLI, lista las estrategias de particionado definidas
+    # En modo CLI, lista las estrategias de particionado y las llaves de MERGE
     print("\n Estrategias de particionado Silver registradas:\n")
-    print(f"  {'Dataset Key':<50} {'Partition Columns'}")
-    print(f"  {'-'*50} {'-'*30}")
-    for key, parts in PARTITION_STRATEGIES.items():
-        parts_str = ", ".join(parts) if parts else "(sin partición)"
-        print(f"  {key:<50} {parts_str}")
+    print(f"  {'Dataset Key':<50} {'Partition Columns':<25} {'Merge Keys'}")
+    print(f"  {'-'*50} {'-'*25} {'-'*40}")
+    for key in PARTITION_STRATEGIES:
+        parts_str = ", ".join(PARTITION_STRATEGIES[key]) if PARTITION_STRATEGIES[key] else "(sin partición)"
+        merge_str = ", ".join(MERGE_KEYS.get(key, [])) or "(sin MERGE_KEYS)"
+        print(f"  {key:<50} {parts_str:<25} {merge_str}")
     print()
