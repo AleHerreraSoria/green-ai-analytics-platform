@@ -15,31 +15,122 @@ from utils.project_env import ensure_dotenv_loaded
 
 ensure_dotenv_loaded()
 
+from components.pipeline_live_combined import render_pipeline_live_stack
 from components.pipeline_timeline import (
     pipeline_timer_metric,
     pipeline_tracks_manual_run,
-    render_pipeline_timeline,
 )
 from utils.airflow_state_client import AirflowStateClient, resolve_pipeline_dag_id
+from utils.data_lake_catalog_sync import sync_data_lake_catalog_from_snapshot
 from utils.realtime_stream import RealtimePipelineStream
 from utils.state_schema import PipelineSnapshot, StageState
 
 COMPLETION_RESET_DELAY_SECONDS = 20
 
 
-def _pipeline_metric_cell(label: str, value: str) -> str:
-    """Misma lectura que st.metric, con título y valor centrados (evita el grid interno de Streamlit)."""
+def _idle_pipeline_snapshot(snapshot: PipelineSnapshot, message: str) -> PipelineSnapshot:
+    """Sin run propio en sesión: no mostrar el último estado de Airflow como si fuera la corrida actual."""
+    return PipelineSnapshot(
+        dag_id=snapshot.dag_id,
+        run_id=None,
+        run_state="waiting",
+        stages=[
+            StageState(stage_id=s.stage_id, label=s.label, state="waiting")
+            for s in snapshot.stages
+        ],
+        current_stage_index=0,
+        overall_progress=0.0,
+        last_updated_at=snapshot.last_updated_at,
+        source_mode=snapshot.source_mode,
+        message=message,
+        run_started_at=None,
+        run_ended_at=None,
+    )
+
+
+def _starting_pipeline_snapshot(snapshot: PipelineSnapshot) -> PipelineSnapshot:
+    """Ya disparaste el DAG; Airflow aún no expone ese run como último — evita mostrar un run viejo en verde."""
+    return PipelineSnapshot(
+        dag_id=snapshot.dag_id,
+        run_id=None,
+        run_state="running",
+        stages=[
+            StageState(stage_id=s.stage_id, label=s.label, state="waiting")
+            for s in snapshot.stages
+        ],
+        current_stage_index=0,
+        overall_progress=0.0,
+        last_updated_at=snapshot.last_updated_at,
+        source_mode=snapshot.source_mode,
+        message="Iniciando ejecución…",
+        run_started_at=None,
+        run_ended_at=None,
+    )
+
+
+def _pipeline_metric_cell_html(label: str, value: str) -> str:
+    """Métricas grandes y centradas; usa `st.html` para que Streamlit no aplique tipografía Markdown encima."""
+    lab = html.escape(label)
+    val = html.escape(str(value))
     return (
-        '<div class="ct-metric-cell">'
-        f'<div class="ct-metric-l">{html.escape(label)}</div>'
-        f'<div class="ct-metric-v">{html.escape(str(value))}</div>'
+        '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;'
+        'text-align:center;width:100%;padding:0.35rem 0.5rem;box-sizing:border-box;">'
+        '<div style="font-size:clamp(14px,1.9vw,22px);line-height:1.2;color:rgba(250,250,250,0.85);'
+        'font-weight:600;font-family:system-ui,-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">'
+        f"{lab}</div>"
+        '<div style="font-size:clamp(28px,3.8vw,44px);line-height:1.08;color:rgb(250,250,250);'
+        'font-weight:700;margin-top:0.4rem;font-variant-numeric:tabular-nums;'
+        'font-family:system-ui,-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">'
+        f"{val}</div>"
         "</div>"
     )
 
 
 st.set_page_config(page_title="Pipeline Live", page_icon="🚀", layout="wide")
 
-st.title("Pipeline Live Tracker")
+
+def _render_pipeline_request_ack_float() -> None:
+    """Aviso tipo ventana sin usar `st.dialog` (evita el overlay oscuro del modal de Streamlit)."""
+    # `width="content"` evita que el contenedor estire todo el ancho mientras está en flujo normal.
+    with st.container(width="content", key="pipeline_ack_float"):
+        st.markdown(
+            """
+            <style>
+            span.ct-pipeline-ack-float-anchor { display: none !important; }
+            /*
+              IMPORTANTE: no usar solo `:has(...)` sobre un único `stVerticalBlock`: el bloque
+              principal de la página también contiene el span como descendiente y acababa
+              aplicando `width: min(460px)` a TODA la vista. Solo estilamos un `stVerticalBlock`
+              que está anidado dentro de otro (el bloque interno del `st.container`).
+            */
+            section[data-testid="stMain"] div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"]:has(span.ct-pipeline-ack-float-anchor) {
+              position: fixed !important;
+              top: max(8vh, 3.5rem) !important;
+              left: 50% !important;
+              transform: translateX(-50%) !important;
+              z-index: 100002 !important;
+              width: min(460px, 94vw) !important;
+              max-width: 94vw !important;
+              margin: 0 !important;
+              padding: 1.15rem 1.35rem 1.25rem !important;
+              background: rgba(18, 18, 18, 0.97) !important;
+              border: 1px solid rgba(158, 220, 104, 0.38) !important;
+              border-radius: 14px !important;
+              box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55) !important;
+            }
+            </style>
+            <span class="ct-pipeline-ack-float-anchor" aria-hidden="true"></span>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown("#### Solicitud registrada")
+        st.write(
+            "Tu solicitud ha sido registrada. El timeline se actualizará cuando "
+            "Airflow comience a correr el pipeline."
+        )
+        if st.button("Entendido", key="close_pipeline_request_ack_dialog", use_container_width=True):
+            st.session_state.pop("show_pipeline_request_ack_dialog", None)
+            st.rerun()
 
 airflow_base_url = os.getenv("AIRFLOW_API_BASE_URL", "").strip()
 if not airflow_base_url:
@@ -78,6 +169,19 @@ if manual_trigger_enabled:
     st.markdown(
         """
         <style>
+        /* Misma fila que el botón: título pegado a la izquierda de su columna */
+        section[data-testid="stMain"]
+          div[data-testid="stHorizontalBlock"]:first-of-type
+          > div[data-testid="column"]:nth-child(1)
+          [data-testid="stHeadingContainer"] h1,
+        section[data-testid="stMain"]
+          div[data-testid="stHorizontalBlock"]:first-of-type
+          > div[data-testid="column"]:nth-child(1) h1 {
+          text-align: left !important;
+          margin-left: 0 !important;
+          padding-left: 0 !important;
+          margin-bottom: 0 !important;
+        }
         /* Único botón de esta página: fondo negro fijo, texto lima; hover solo cambia color del texto */
         section[data-testid="stMain"] button[kind="tertiary"] {
             min-height: 0 !important;
@@ -128,7 +232,9 @@ if manual_trigger_enabled:
         """,
         unsafe_allow_html=True,
     )
-    _, btn_col = st.columns([4.45, 1.25])
+    title_col, btn_col = st.columns([4.45, 1.25])
+    with title_col:
+        st.title("Pipeline Live Tracker")
     with btn_col:
         if st.button(
             "▶️ Ejecutar Pipeline",
@@ -141,12 +247,14 @@ if manual_trigger_enabled:
                 st.session_state["pipeline_celebrate_run_id"] = run_id
                 st.session_state.pop("pipeline_completion_ts", None)
                 st.session_state["pipeline_force_inactive_view"] = False
-                st.toast(f"Ejecución iniciada: {run_id}", icon="✅")
-                st.success(
-                    f"Se disparó un nuevo run (`{run_id}`). El timeline se actualizará cuando Airflow lo tome."
-                )
+                st.session_state["show_pipeline_request_ack_dialog"] = True
             except RuntimeError as exc:
                 st.error(str(exc))
+else:
+    st.title("Pipeline Live Tracker")
+
+if st.session_state.get("show_pipeline_request_ack_dialog"):
+    _render_pipeline_request_ack_float()
 
 stream: RealtimePipelineStream = st.session_state.pipeline_stream
 events = stream.consume_events(limit=30)
@@ -182,25 +290,24 @@ else:
 
     display_snapshot = snapshot
     display_celebrate_rid = celebrate_rid
+    ui_locked = False
+
     if force_inactive_view:
         # Reinicio visual a estado inicial tras 20s de mostrar "pipeline finalizado".
-        display_snapshot = PipelineSnapshot(
-            dag_id=snapshot.dag_id,
-            run_id=None,
-            run_state="waiting",
-            stages=[
-                StageState(stage_id=s.stage_id, label=s.label, state="waiting")
-                for s in snapshot.stages
-            ],
-            current_stage_index=0,
-            overall_progress=0.0,
-            last_updated_at=snapshot.last_updated_at,
-            source_mode=snapshot.source_mode,
-            message="Esperando la próxima ejecución del pipeline.",
-            run_started_at=None,
-            run_ended_at=None,
+        display_snapshot = _idle_pipeline_snapshot(
+            snapshot, "Esperando la próxima ejecución del pipeline."
         )
         display_celebrate_rid = None
+        ui_locked = True
+    elif celebrate_rid is None:
+        # Primera vez / sin disparo en esta sesión: no reflejar un run histórico de Airflow como "Completada".
+        display_snapshot = _idle_pipeline_snapshot(snapshot, "Esperando ejecución del pipeline.")
+        display_celebrate_rid = None
+        ui_locked = True
+    elif not pipeline_tracks_manual_run(snapshot, celebrate_rid):
+        # Ya hubo clic en Ejecutar pero el último snapshot aún es otro run (p. ej. anterior en verde).
+        display_snapshot = _starting_pipeline_snapshot(snapshot)
+        ui_locked = False
 
     show_completion_hero = (
         snapshot.run_state == "done"
@@ -209,10 +316,20 @@ else:
         and celebrate_rid == snapshot.run_id
         and not force_inactive_view
     )
-    render_pipeline_timeline(
+    sync_data_lake_catalog_from_snapshot(snapshot, celebrate_rid)
+
+    st.session_state.setdefault("bucket_catalog", {"bronze": [], "silver": [], "gold": []})
+    st.session_state.setdefault(
+        "bucket_list_errors", {"bronze": None, "silver": None, "gold": None}
+    )
+
+    render_pipeline_live_stack(
         display_snapshot,
         show_completion_hero=show_completion_hero,
         tracked_manual_run_id=display_celebrate_rid,
+        ui_locked=ui_locked,
+        bucket_catalog=st.session_state["bucket_catalog"],
+        bucket_errors=st.session_state["bucket_list_errors"],
     )
 
     tracks_display_run = pipeline_tracks_manual_run(display_snapshot, display_celebrate_rid)
@@ -224,24 +341,14 @@ else:
     st.markdown(
         """
         <style>
-        /* Celdas tipo métrica (HTML propio): título y valor siempre centrados */
-        div[data-testid="stMarkdownContainer"] .ct-metric-cell {
-            text-align: center;
+        /* Centrar bloques st.html dentro de las columnas de métricas */
+        section[data-testid="stMain"] div[data-testid="column"] > div[data-testid="stVerticalBlock"] {
+            align-items: center !important;
+        }
+        section[data-testid="stMain"] div[data-testid="column"] div[data-testid="stElementContainer"] {
             width: 100%;
-            padding: 0.1rem 0 0.25rem 0;
-        }
-        div[data-testid="stMarkdownContainer"] .ct-metric-l {
-            font-size: 0.875rem;
-            line-height: 1.35;
-            color: rgba(250, 250, 250, 0.72);
-            font-weight: 400;
-        }
-        div[data-testid="stMarkdownContainer"] .ct-metric-v {
-            font-size: clamp(1.35rem, 3.2vw, 1.85rem);
-            font-weight: 600;
-            line-height: 1.15;
-            color: rgb(250, 250, 250);
-            margin-top: 0.12rem;
+            display: flex;
+            justify-content: center;
         }
         </style>
         """,
@@ -249,13 +356,13 @@ else:
     )
     mc_last, mc_mode, mc_time, mc_prog = st.columns(4)
     with mc_last:
-        st.markdown(_pipeline_metric_cell("Última actualización", last_upd), unsafe_allow_html=True)
+        st.html(_pipeline_metric_cell_html("Última actualización", last_upd))
     with mc_mode:
-        st.markdown(_pipeline_metric_cell("Modo de actualización", live_mode), unsafe_allow_html=True)
+        st.html(_pipeline_metric_cell_html("Modo de actualización", live_mode))
     with mc_time:
-        st.markdown(_pipeline_metric_cell(time_label, time_value), unsafe_allow_html=True)
+        st.html(_pipeline_metric_cell_html(time_label, time_value))
     with mc_prog:
-        st.markdown(_pipeline_metric_cell("Progreso global", f"{progress_pct}%"), unsafe_allow_html=True)
+        st.html(_pipeline_metric_cell_html("Progreso global", f"{progress_pct}%"))
 
 last_error = stream.latest_error()
 if last_error:

@@ -37,12 +37,17 @@ def get_s3_client():
 
 
 def list_parquet_files(prefix: str) -> list:
-    """Listar archivos parquet en un prefijo del bucket S3."""
+    """Listar archivos parquet en un prefijo del bucket S3 (paginado)."""
     s3 = get_s3_client()
+    keys: list[str] = []
     try:
-        response = s3.list_objects_v2(Bucket=S3_GOLD_BUCKET, Prefix=prefix)
-        return [obj['Key'] for obj in response.get('Contents', []) 
-                if obj['Key'].endswith('.parquet')]
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=S3_GOLD_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents") or []:
+                k = obj["Key"]
+                if k.endswith(".parquet"):
+                    keys.append(k)
+        return keys
     except Exception as e:
         logger.warning(f"No se pudieron listar archivos en {prefix}: {e}")
         return []
