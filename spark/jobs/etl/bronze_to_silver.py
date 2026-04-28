@@ -13,6 +13,12 @@ Variables de entorno requeridas:
     S3_BRONZE_BUCKET, S3_SILVER_BUCKET
     En producción son inyectadas por el IAM Role / Airflow.
     En desarrollo local se pueden definir en un archivo .env.
+
+Estrategia de escritura:
+    Todas las llamadas a write_to_silver() utilizan operaciones MERGE nativas
+    de Delta Lake (ver libs/writer.py). La primera ejecución hace bootstrap;
+    las subsiguientes hacen Upsert idempotente sobre la llave natural del
+    dataset definida en MERGE_KEYS de writer.py.
 """
 
 from __future__ import annotations
@@ -223,7 +229,7 @@ def process_carbon_intensity_flat(spark: SparkSession, endpoint: str) -> tuple[D
     df = _log_dropped(df_renamed, df_clean, f"carbon_intensity/{endpoint}")
 
     dataset_key = f"electricity_maps/carbon_intensity/{endpoint}"
-    result: WriteResult = write_to_silver(df, dataset_key)
+    result: WriteResult = write_to_silver(df, dataset_key, spark=spark)
     return df, result.rows_written
 
 
@@ -280,7 +286,7 @@ def process_carbon_intensity_history(spark: SparkSession) -> tuple[DataFrame, in
     df = _log_dropped(df_raw_exp, df_clean, "carbon_intensity/history")
 
     dataset_key = "electricity_maps/carbon_intensity/history"
-    result: WriteResult = write_to_silver(df, dataset_key)
+    result: WriteResult = write_to_silver(df, dataset_key, spark=spark)
     _require_materialized_write(result, dataset_key)
     return df, result.rows_written
 
@@ -334,7 +340,7 @@ def process_electricity_mix(spark: SparkSession) -> tuple[DataFrame, int]:
     df = _log_dropped(df_raw_exp, df_clean, "electricity_mix/latest")
 
     dataset_key = "electricity_maps/electricity_mix/latest"
-    result: WriteResult = write_to_silver(df, dataset_key)
+    result: WriteResult = write_to_silver(df, dataset_key, spark=spark)
     _require_materialized_write(result, dataset_key)
     return df, result.rows_written
 
@@ -416,7 +422,7 @@ def process_observed_zones_dimension(spark: SparkSession) -> tuple[DataFrame, in
         )
     )
 
-    result = write_to_silver(df, "reference/zones_dimension")
+    result = write_to_silver(df, "reference/zones_dimension", spark=spark)
     return df, result.rows_written
 
 
@@ -464,7 +470,7 @@ def process_global_petrol_prices(spark: SparkSession) -> tuple[DataFrame, int]:
         F.round(F.col("residential_usd_per_kwh") * seasonal_factor, 4)
     )
 
-    result = write_to_silver(df, "global_petrol_prices")
+    result = write_to_silver(df, "global_petrol_prices", spark=spark)
     return df, result.rows_written
 
 
@@ -484,7 +490,7 @@ def process_mlco2_yearly_avg(spark: SparkSession) -> tuple[DataFrame, int]:
         .withColumnRenamed("Country", "country")
     )
 
-    result: WriteResult = write_to_silver(df, "mlco2/yearly_averages")
+    result: WriteResult = write_to_silver(df, "mlco2/yearly_averages", spark=spark)
     return df, result.rows_written
 
 
@@ -495,7 +501,7 @@ def process_mlco2_instances(spark: SparkSession) -> tuple[DataFrame, int]:
     df_raw = spark.read.option("header", "true").schema(MLCO2_INSTANCES_SCHEMA).csv(f"{BRONZE}/mlco2/instances.csv")
     df_clean = df_raw.filter(F.col("id").isNotNull())
     df = _log_dropped(df_raw, df_clean, "mlco2/instances")
-    result: WriteResult = write_to_silver(df, "mlco2/instances")
+    result: WriteResult = write_to_silver(df, "mlco2/instances", spark=spark)
     return df, result.rows_written
 
 def process_mlco2_impact(spark: SparkSession) -> tuple[DataFrame, int]:
@@ -507,7 +513,7 @@ def process_mlco2_impact(spark: SparkSession) -> tuple[DataFrame, int]:
                         .withColumnRenamed("PUE source", "pue_source"))
     df_clean = df_renamed.filter(F.col("region").isNotNull())
     df = _log_dropped(df_renamed, df_clean, "mlco2/impact")
-    result: WriteResult = write_to_silver(df, "mlco2/impact")
+    result: WriteResult = write_to_silver(df, "mlco2/impact", spark=spark)
     return df, result.rows_written
 
 def process_mlco2_gpus(spark: SparkSession) -> tuple[DataFrame, int]:
@@ -519,7 +525,7 @@ def process_mlco2_gpus(spark: SparkSession) -> tuple[DataFrame, int]:
                         .withColumnRenamed("GFLOPS16/W", "gflops_16_per_w"))
     df_clean = df_renamed.filter(F.col("gpu_model").isNotNull())
     df = _log_dropped(df_renamed, df_clean, "mlco2/gpus")
-    result: WriteResult = write_to_silver(df, "mlco2/gpus")
+    result: WriteResult = write_to_silver(df, "mlco2/gpus", spark=spark)
     return df, result.rows_written
 
 
@@ -560,7 +566,7 @@ def process_owid(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_raw, df_clean, "owid")
 
-    result: WriteResult = write_to_silver(df, "owid")
+    result: WriteResult = write_to_silver(df, "owid", spark=spark)
     return df, result.rows_written
 
 
@@ -579,7 +585,7 @@ def process_ec2_pricing(spark: SparkSession) -> tuple[DataFrame, int]:
         .withColumn("as_of_date", F.to_date("as_of_date", "yyyy-MM-dd"))
     )
 
-    result: WriteResult = write_to_silver(df, "reference/ec2_pricing")
+    result: WriteResult = write_to_silver(df, "reference/ec2_pricing", spark=spark)
     return df, result.rows_written
 
 
@@ -606,7 +612,7 @@ def process_geo_cloud_mapping(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_raw, df_clean, "reference/geo_cloud_mapping")
 
-    result: WriteResult = write_to_silver(df, "reference/geo_cloud_mapping")
+    result: WriteResult = write_to_silver(df, "reference/geo_cloud_mapping", spark=spark)
     return df, result.rows_written
 
 # ---------------------------------------------------------------------------
@@ -646,7 +652,7 @@ def process_usage_logs(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_raw, df_clean, "usage_logs")
 
-    result: WriteResult = write_to_silver(df, "usage_logs")
+    result: WriteResult = write_to_silver(df, "usage_logs", spark=spark)
     return df, result.rows_written
 
 
@@ -715,7 +721,7 @@ def process_world_bank(spark: SparkSession) -> tuple[DataFrame, int]:
             .csv(f"s3a://{BRONZE_BUCKET}/{temp_s3_key}")
         )
 
-        result = write_to_silver(df, "world_bank/ict_exports")
+        result = write_to_silver(df, "world_bank/ict_exports", spark=spark)
         return df, result.rows_written
 
     finally:
@@ -761,7 +767,7 @@ def process_world_bank_metadata(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_renamed, df_clean, "reference/world_bank_metadata")
 
-    result: WriteResult = write_to_silver(df, "reference/world_bank_metadata")
+    result: WriteResult = write_to_silver(df, "reference/world_bank_metadata", spark=spark)
     return df, result.rows_written
 
 # ===========================================================================
