@@ -82,6 +82,166 @@ STAGE_BUSINESS_DESCRIPTIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Escala visual del modal respecto al diseño base (1.0 = 100%). 1.5 = 150 % en todos los elementos.
+_MODAL_VISUAL_SCALE = 1.5
+
+# Estilos del modal montado en document.parent (página principal), prefijo .ptm- para no chocar con Streamlit.
+_MODAL_PORTAL_CSS = (
+    """
+#pipeline-timeline-modal-root.ptm-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  background: rgba(0,0,0,0.45);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+}
+#pipeline-timeline-modal-root.ptm-overlay.ptm-open { display: block; }
+#pipeline-timeline-modal-root .ptm-inner {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem 1rem 2rem;
+  box-sizing: border-box;
+}
+#pipeline-timeline-modal-root .ptm-card {
+  background: linear-gradient(150deg, #1e1e1e 0%, #141414 100%);
+  border: 1px solid rgba(222,255,154,.26);
+  border-radius: 18px;
+  padding: 1.5rem 1.75rem 1.4rem;
+  width: min(420px, 92vw);
+  position: relative;
+  box-shadow:
+    0 0 0 1px rgba(222,255,154,.05),
+    0 20px 55px rgba(0,0,0,.62),
+    0 4px 14px rgba(0,0,0,.38);
+  animation: ptmModalIn .22s cubic-bezier(.16,1,.3,1) both;
+  zoom: """
+    + str(_MODAL_VISUAL_SCALE)
+    + """;
+}
+@keyframes ptmModalIn {
+  from { opacity: 0; transform: scale(.91) translateY(14px); }
+  to   { opacity: 1; transform: scale(1)   translateY(0); }
+}
+#pipeline-timeline-modal-root .ptm-close {
+  position: absolute; top: 14px; right: 14px;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.09);
+  color: #888; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .14s;
+}
+#pipeline-timeline-modal-root .ptm-close:hover {
+  background: rgba(222,255,154,.15); border-color: rgba(222,255,154,.4); color: #deff9a;
+}
+#pipeline-timeline-modal-root .ptm-header-flex {
+  display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;
+}
+#pipeline-timeline-modal-root .ptm-medal {
+  width: 3.5rem; height: 3.5rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.8rem; flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,.1);
+  box-shadow: 0 4px 14px rgba(0,0,0,.42);
+}
+#pipeline-timeline-modal-root .ptm-medal.medal-bronze {
+  background: radial-gradient(circle at 32% 28%, #e8a060, #8b4513 58%, #4a2509 100%);
+}
+#pipeline-timeline-modal-root .ptm-medal.medal-silver {
+  background: radial-gradient(circle at 32% 28%, #f2f2f2, #a8aeb8 55%, #5c636b 100%);
+}
+#pipeline-timeline-modal-root .ptm-medal.medal-gold {
+  background: radial-gradient(circle at 32% 28%, #fff4b8, #e8c547 50%, #a67c00 100%);
+}
+#pipeline-timeline-modal-root .ptm-header-text {
+  display: flex; flex-direction: column; justify-content: center;
+}
+#pipeline-timeline-modal-root .ptm-eyebrow {
+  font-size: .68rem; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: rgba(222,255,154,.6);
+  margin-bottom: .2rem;
+}
+#pipeline-timeline-modal-root .ptm-title {
+  font-size: 1.15rem; font-weight: 700; color: #f0ffe0;
+  line-height: 1.2;
+}
+#pipeline-timeline-modal-root .ptm-divider {
+  border: none; height: 1px;
+  background: linear-gradient(90deg, rgba(222,255,154,.3), transparent);
+  margin-bottom: 1rem;
+}
+#pipeline-timeline-modal-root .ptm-highlight {
+  display: inline-block;
+  background: rgba(222,255,154,.1);
+  color: #deff9a;
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 0.85rem;
+  border: 1px solid rgba(222,255,154,.2);
+}
+#pipeline-timeline-modal-root .ptm-desc {
+  font-size: .9rem; color: #c4c4c4; line-height: 1.5;
+  margin-bottom: 1rem;
+}
+#pipeline-timeline-modal-root .ptm-metrics {
+  list-style: none; padding: 0; margin: 0 0 1.2rem 0;
+  display: flex; flex-direction: column; gap: 0.45rem;
+}
+#pipeline-timeline-modal-root .ptm-metrics li {
+  font-size: 0.82rem; color: #e0e0e0;
+  display: flex; align-items: flex-start; gap: 0.45rem;
+  background: rgba(255,255,255,.03);
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.05);
+}
+#pipeline-timeline-modal-root .ptm-metrics .check-icon {
+  color: #8abf50; font-weight: bold; font-size: 0.9rem; line-height: 1;
+}
+#pipeline-timeline-modal-root .ptm-badge {
+  display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 999px; padding: .35rem 1rem;
+  font-size: .78rem; font-weight: 600; color: #fff;
+}
+"""
+)
+
+# Marcado del modal en la ventana principal (inyectado vía JS).
+_PORTAL_SHELL_HTML = (
+    '<div class="ptm-inner">'
+    '<div class="ptm-card">'
+    '<button type="button" class="ptm-close" id="ptm-close-btn" aria-label="Cerrar"'
+    ' onclick="try{window.parent.__pipelineTimelineCloseModal&&window.parent.__pipelineTimelineCloseModal()}catch(e){}">'
+    '<svg width="12" height="12" viewBox="0 0 12 12" fill="none">'
+    '<path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'
+    '</svg>'
+    '</button>'
+    '<div class="ptm-header-flex">'
+    '<div id="ptm-medal" class="ptm-medal medal-bronze"></div>'
+    '<div class="ptm-header-text">'
+    '<p class="ptm-eyebrow">Análisis de Pipeline</p>'
+    '<p id="ptm-title" class="ptm-title"></p>'
+    '</div></div>'
+    '<hr class="ptm-divider">'
+    '<div id="ptm-highlight" class="ptm-highlight"></div>'
+    '<p id="ptm-desc" class="ptm-desc"></p>'
+    '<ul id="ptm-metrics" class="ptm-metrics"></ul>'
+    '<div id="ptm-badge" class="ptm-badge"></div>'
+    '</div></div>'
+)
+
 
 def _medal_tier(index: int) -> tuple[str, str, str]:
     if index < _MEDAL_BRONZE_UNTIL:
@@ -177,36 +337,50 @@ def _status_chip_html(snapshot: PipelineSnapshot) -> str:
     return f'<span class="pipeline-status {css}">{label}</span>'
 
 
-def _build_html(
+def _build_pipeline_shell_fragment(
     snapshot: PipelineSnapshot,
     progress_pct: int,
     object_left: int,
     show_completion_hero: bool,
-) -> str:
+    *,
+    ui_locked: bool = False,
+) -> tuple[str, str, str]:
     """
-    Construye el documento HTML completo del componente de pipeline.
+    Fragmento visual del timeline (solo div.pipeline-shell) + JSONs para el script.
+    Devuelve (html_shell, desc_json, stage_states_json).
     """
-
-    # ── Construir tarjetas ──────────────────────────────────────────────────
-    cards_parts = []
+    cards_parts: list[str] = []
     for i, stage in enumerate(snapshot.stages):
         medal_class, medal_emoji, medal_label = _medal_tier(i)
-        state_text = STATE_TEXT.get(stage.state, "En espera")
+        if ui_locked:
+            state_text = "Bloqueado"
+            card_css_state = "waiting"
+        else:
+            state_text = STATE_TEXT.get(stage.state, "En espera")
+            card_css_state = stage.state
 
-        # Valores escapados para atributos HTML (quote=True escapa las comillas)
-        d_title  = html.escape(stage.label,  quote=True)
-        d_mclass = html.escape(medal_class,  quote=True)
-        d_memoji = html.escape(medal_emoji,  quote=True)
-        d_state  = html.escape(state_text,   quote=True)
+        d_title = html.escape(stage.label, quote=True)
+        d_mclass = html.escape(medal_class, quote=True)
+        d_memoji = html.escape(medal_emoji, quote=True)
+        d_state = html.escape(state_text, quote=True)
 
         label_e = html.escape(stage.label)
         emoji_e = html.escape(medal_emoji)
-        aria_e  = html.escape(medal_label)
-        card_e  = html.escape(stage.state)
+        aria_e = html.escape(medal_label)
+        card_e = html.escape(card_css_state)
+        lock_cls = " locked" if ui_locked else ""
+        if ui_locked:
+            meta_line = (
+                '<p class="s-meta s-meta-with-lock">'
+                '<span class="s-lock" title="Ejecutá el pipeline para ver el avance real" aria-hidden="true">🔒</span>'
+                "<span>Bloqueado</span>"
+                "</p>"
+            )
+        else:
+            meta_line = f'<p class="s-meta">{html.escape(state_text)}</p>'
 
         cards_parts.append(
-            f'<div class="stage-card {card_e}">'
-            # Botón de información con data-attributes 
+            f'<div class="stage-card {card_e}{lock_cls}">'
             f'<button class="info-btn js-info"'
             f' data-title="{d_title}"'
             f' data-mclass="{d_mclass}"'
@@ -216,86 +390,108 @@ def _build_html(
             f' title="¿Qué es esta etapa?">i</button>'
             f'<div class="stage-head">'
             f'<span class="stage-medal {medal_class}" role="img" aria-label="{aria_e}">'
-            f'{emoji_e}</span>'
+            f"{emoji_e}</span>"
             f'<div class="stage-body">'
             f'<p class="s-title">{label_e}</p>'
-            f'<p class="s-meta">{state_text}</p>'
-            f'</div></div>'
-            f'</div>'
+            f"{meta_line}"
+            f"</div></div>"
+            f"</div>"
         )
 
     hero_block = (
         '<div class="completion-hero" role="status">¡Están listos tus datos!</div>'
-        if show_completion_hero else ""
+        if show_completion_hero
+        else ""
     )
 
     status_chip = _status_chip_html(snapshot)
-    dag_id_e    = html.escape(snapshot.dag_id)
+    dag_id_e = html.escape(snapshot.dag_id)
 
-    # JSON del diccionario estructurado — inyectado como literal JS
     desc_json = json.dumps(STAGE_BUSINESS_DESCRIPTIONS, ensure_ascii=False)
+
+    if ui_locked:
+        stage_state_map = {s.label: "Bloqueado" for s in snapshot.stages}
+    else:
+        stage_state_map = {
+            s.label: STATE_TEXT.get(s.state, "En espera") for s in snapshot.stages
+        }
+    stage_states_json = json.dumps(stage_state_map, ensure_ascii=False)
 
     cards_html = "".join(cards_parts)
 
-    # ── HTML completo ───────────────────────────────────────────────────────
-    return (
-        '<!DOCTYPE html>'
-        '<html lang="es">'
-        '<head>'
-        '<meta charset="UTF-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<style>' + _get_css() + '</style>'
-        '</head>'
-        '<body>'
-
+    shell = (
         f'<div class="pipeline-shell">'
         f'  <div class="pipeline-top">'
-        f'    <h3>{dag_id_e}</h3>'
-        f'    {status_chip}'
-        f'  </div>'
-        f'  {hero_block}'
+        f"    <h3>{dag_id_e}</h3>"
+        f"    {status_chip}"
+        f"  </div>"
+        f"  {hero_block}"
         f'  <div class="line-wrap">'
         f'    <div class="line-track">'
         f'      <div class="line-progress" style="width:{progress_pct}%"></div>'
         f'      <div class="line-object"   style="left:{object_left}%"></div>'
-        f'    </div>'
-        f'  </div>'
+        f"    </div>"
+        f"  </div>"
         f'  <div class="stage-grid">{cards_html}</div>'
-        f'</div>'
+        f"</div>"
+    )
+    return shell, desc_json, stage_states_json
 
-        # =============================================================================
-        # Contenedores visuales del Modal rediseñados por el
-        # ingeniero Jose David Frias
-        # =============================================================================
-        '<div id="modal-overlay" class="modal-overlay"'
-        ' role="dialog" aria-modal="true" aria-labelledby="m-title">'
-        '  <div class="modal-card" role="document">'
-        '    <button id="js-close" class="modal-close" aria-label="Cerrar">'
-        '      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">'
-        '        <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'
-        '      </svg>'
-        '    </button>'
-        '    <div class="modal-header-flex">'
-        '       <div id="m-medal" class="modal-medal medal-bronze">🥉</div>'
-        '       <div class="modal-header-text">'
-        '           <p class="modal-eyebrow">Análisis de Pipeline</p>'
-        '           <p id="m-title" class="modal-title">Etapa</p>'
-        '       </div>'
-        '    </div>'
-        '    <hr class="modal-divider">'
-        '    <div id="m-highlight" class="modal-highlight">Highlight</div>'
-        '    <p id="m-desc" class="modal-desc">Descripción</p>'
-        '    <ul id="m-metrics" class="modal-metrics"></ul>'
-        '    <div id="m-badge" class="modal-badge">⚡ Estado</div>'
-        '  </div>'
-        '</div>'
 
-        '<script>'
-        + _get_js(desc_json) +
-        '</script>'
+def build_timeline_stack_html_and_script(
+    snapshot: PipelineSnapshot,
+    progress_pct: int,
+    object_left: int,
+    show_completion_hero: bool,
+    *,
+    ui_locked: bool = False,
+) -> tuple[str, str]:
+    """(fragmento pipeline-shell, etiqueta script completa) para empilar con otros bloques."""
+    shell, desc_json, stage_states_json = _build_pipeline_shell_fragment(
+        snapshot,
+        progress_pct,
+        object_left,
+        show_completion_hero,
+        ui_locked=ui_locked,
+    )
+    script = "<script>" + _get_js(desc_json, _MODAL_PORTAL_CSS, stage_states_json) + "</script>"
+    return shell, script
 
-        '</body>'
-        '</html>'
+
+def _build_html(
+    snapshot: PipelineSnapshot,
+    progress_pct: int,
+    object_left: int,
+    show_completion_hero: bool,
+    *,
+    ui_locked: bool = False,
+) -> str:
+    """
+    Construye el documento HTML completo del componente de pipeline.
+    """
+    shell, desc_json, stage_states_json = _build_pipeline_shell_fragment(
+        snapshot,
+        progress_pct,
+        object_left,
+        show_completion_hero,
+        ui_locked=ui_locked,
+    )
+
+    return (
+        "<!DOCTYPE html>"
+        '<html lang="es">'
+        "<head>"
+        '<meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<style>" + _get_css() + "</style>"
+        "</head>"
+        "<body>"
+        + shell
+        + "<script>"
+        + _get_js(desc_json, _MODAL_PORTAL_CSS, stage_states_json)
+        + "</script>"
+        "</body>"
+        "</html>"
     )
 
 
@@ -380,6 +576,23 @@ body {
 .stage-card.done    { border-color: rgba(91,196,112,.52); }
 .stage-card.error   { border-color: rgba(245,96,96,.52); }
 .stage-card.retry   { border-color: rgba(255,180,70,.52); }
+.stage-card.locked {
+  border-color: rgba(88, 88, 88, 0.55);
+  background: #141414;
+  opacity: 0.95;
+}
+.s-meta-with-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
+  flex-wrap: wrap;
+}
+.s-meta-with-lock .s-lock {
+  font-size: 0.72em;
+  line-height: 1;
+  user-select: none;
+}
 
 .stage-head { display: flex; flex-direction: column; align-items: center; gap: .35rem; text-align: center; }
 .stage-medal {
@@ -418,114 +631,6 @@ body {
 }
 .info-btn:active { transform: scale(.92); }
 
-/* =============================================================================
-   Estilos visuales del Modal añadidos por el ingeniero Jose David Frias
-============================================================================= */
-.modal-overlay {
-  display: none;
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.4);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  align-items: center; justify-content: center;
-}
-.modal-overlay.open { display: flex; }
-
-.modal-card {
-  background: linear-gradient(150deg, #1e1e1e 0%, #141414 100%);
-  border: 1px solid rgba(222,255,154,.26);
-  border-radius: 18px;
-  padding: 1.5rem 1.75rem 1.4rem;
-  width: min(420px, 92vw);
-  position: relative;
-  box-shadow:
-    0 0 0 1px rgba(222,255,154,.05),
-    0 20px 55px rgba(0,0,0,.62),
-    0 4px 14px rgba(0,0,0,.38);
-  animation: modalIn .22s cubic-bezier(.16,1,.3,1) both;
-}
-@keyframes modalIn {
-  from { opacity: 0; transform: scale(.91) translateY(14px); }
-  to   { opacity: 1; transform: scale(1)   translateY(0); }
-}
-
-.modal-close {
-  position: absolute; top: 14px; right: 14px;
-  width: 28px; height: 28px; border-radius: 50%;
-  background: rgba(255,255,255,.05);
-  border: 1px solid rgba(255,255,255,.09);
-  color: #888; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all .14s;
-}
-.modal-close:hover { background: rgba(222,255,154,.15); border-color: rgba(222,255,154,.4); color: #deff9a; }
-
-.modal-header-flex { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
-.modal-medal {
-  width: 3.5rem; height: 3.5rem; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 1.8rem; flex-shrink: 0;
-  border: 1px solid rgba(255,255,255,.1);
-  box-shadow: 0 4px 14px rgba(0,0,0,.42);
-}
-.modal-header-text { display: flex; flex-direction: column; justify-content: center; }
-.modal-eyebrow {
-  font-size: .68rem; font-weight: 700; letter-spacing: .08em;
-  text-transform: uppercase; color: rgba(222,255,154,.6);
-  margin-bottom: .2rem;
-}
-.modal-title {
-  font-size: 1.15rem; font-weight: 700; color: #f0ffe0;
-  line-height: 1.2;
-}
-
-.modal-divider {
-  border: none; height: 1px;
-  background: linear-gradient(90deg, rgba(222,255,154,.3), transparent);
-  margin-bottom: 1rem;
-}
-
-.modal-highlight {
-  display: inline-block;
-  background: rgba(222,255,154,.1);
-  color: #deff9a;
-  padding: 0.35rem 0.75rem;
-  border-radius: 6px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  margin-bottom: 0.85rem;
-  border: 1px solid rgba(222,255,154,.2);
-}
-
-.modal-desc {
-  font-size: .9rem; color: #c4c4c4; line-height: 1.5;
-  margin-bottom: 1rem;
-}
-
-.modal-metrics {
-  list-style: none; padding: 0; margin: 0 0 1.2rem 0;
-  display: flex; flex-direction: column; gap: 0.45rem;
-}
-.modal-metrics li {
-  font-size: 0.82rem; color: #e0e0e0;
-  display: flex; align-items: flex-start; gap: 0.45rem;
-  background: rgba(255,255,255,.03);
-  padding: 0.4rem 0.6rem;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,.05);
-}
-.modal-metrics .check-icon {
-  color: #8abf50; font-weight: bold; font-size: 0.9rem; line-height: 1;
-}
-
-.modal-badge {
-  display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
-  background: rgba(255,255,255,.05);
-  border: 1px solid rgba(255,255,255,.15);
-  border-radius: 999px; padding: .35rem 1rem;
-  font-size: .78rem; font-weight: 600; color: #fff;
-}
-
 /* Completion hero */
 .completion-hero {
   margin: .65rem 0 .3rem; padding: .7rem 1rem;
@@ -538,71 +643,88 @@ body {
 """
 
 
-def _get_js(desc_json: str) -> str:
+def _get_js(desc_json: str, modal_css: str, stage_states_json: str) -> str:
     """
-    Devuelve el JS del modal.
+    Modal en documento padre (página Streamlit). El cierre usa window.parent
+    para sobrevivir a los reruns del iframe (Streamlit); el badge se sincroniza
+    con STAGE_STATE_MAP en cada recarga del componente.
     """
+    css_lit = json.dumps(modal_css)
+    shell_lit = json.dumps(_PORTAL_SHELL_HTML)
     return (
-        # =============================================================================
-        # Lógica de renderizado dinámico añadida por el ingeniero Jose David Frias
-        # =============================================================================
         "(function(){"
         "var D=" + desc_json + ";"
-        "var ov=document.getElementById('modal-overlay');"
-        "var mm=document.getElementById('m-medal');"
-        "var mt=document.getElementById('m-title');"
-        "var md=document.getElementById('m-desc');"
-        "var mh=document.getElementById('m-highlight');"
-        "var ml=document.getElementById('m-metrics');"
-        "var mb=document.getElementById('m-badge');"
-        "var xb=document.getElementById('js-close');"
-
-        "function open(t,mc,me,s){"
-        "  var data = D[t] || {desc: 'Procesando etapa del pipeline.', metrics: [], highlight: ''};"
-        "  mm.className='modal-medal '+mc;"
-        "  mm.textContent=me;"
-        "  mt.textContent=t;"
-        
-        # Renderizado de la descripción principal (Jose David Frias)
-        "  md.textContent=data.desc;"
-        
-        # Renderizado del Highlight dinámico (Jose David Frias)
-        "  if(data.highlight){ mh.style.display='inline-block'; mh.textContent=data.highlight; } "
-        "  else { mh.style.display='none'; }"
-
-        # Renderizado de las métricas en viñetas (Jose David Frias)
-        "  var metricsHtml = '';"
-        "  if(data.metrics && data.metrics.length > 0){"
-        "    for(var i=0; i<data.metrics.length; i++){"
-        "      metricsHtml += '<li><span class=\"check-icon\">✓</span> ' + data.metrics[i] + '</li>';"
-        "    }"
-        "  }"
-        "  ml.innerHTML = metricsHtml;"
-
-        "  mb.textContent='\\u26a1 '+s;"
-        "  ov.classList.add('open');"
-        "  xb.focus();"
+        "var STAGE_STATE_MAP=" + stage_states_json + ";"
+        "var MODAL_CSS=" + css_lit + ";"
+        "var PORTAL_HTML=" + shell_lit + ";"
+        "var PID='pipeline-timeline-modal-root';var SID='pipeline-timeline-modal-styles';"
+        "function targetDoc(){try{if(window.parent!==window){return window.parent.document}}"
+        "catch(e){}return document;}"
+        "function ensureStyles(doc){if(doc.getElementById(SID))return;"
+        "var st=doc.createElement('style');st.id=SID;st.textContent=MODAL_CSS;doc.head.appendChild(st);}"
+        "function removePortal(doc){var r=doc.getElementById(PID);"
+        "if(r&&r.parentNode)r.parentNode.removeChild(r);}"
+        "function closeModal(){removePortal(targetDoc());}"
+        "window.parent.__pipelineTimelineCloseModal=function(){try{closeModal();}catch(e){}};"
+        "if(!window.parent.__pipelineTimelineEscInstalled){"
+        "window.parent.__pipelineTimelineEscInstalled=1;"
+        "window.parent.addEventListener('keydown',function(ev){"
+        "if(ev.key!=='Escape')return;"
+        "var fn=window.parent.__pipelineTimelineCloseModal;if(fn)fn();});}"
+        "function refreshOpenModal(){var doc=targetDoc();var root=doc.getElementById(PID);"
+        "if(!root||!root.classList.contains('ptm-open'))return;"
+        "var te=root.querySelector('#ptm-title');var be=root.querySelector('#ptm-badge');"
+        "if(!te||!be)return;var lbl=te.textContent;var nv=STAGE_STATE_MAP[lbl];"
+        "if(typeof nv==='string'){be.textContent='\\u26a1 '+nv;}}"
+        "function mountPortal(doc){ensureStyles(doc);removePortal(doc);"
+        "var el=doc.createElement('div');el.id=PID;el.className='ptm-overlay';"
+        "el.setAttribute('role','dialog');el.setAttribute('aria-modal','true');"
+        "el.setAttribute('aria-labelledby','ptm-title');el.innerHTML=PORTAL_HTML;"
+        "el.setAttribute('onclick',"
+        "'try{var t=event.target;if(t&&t.closest&&!t.closest(\".ptm-card\")){"
+        "window.parent.__pipelineTimelineCloseModal&&window.parent.__pipelineTimelineCloseModal();}"
+        "}catch(e){}');"
+        "doc.body.appendChild(el);return el;}"
+        "function openModal(t,mc,me,s){"
+        "closeModal();"
+        "var doc=targetDoc();"
+        "var data=D[t]||{desc:'Procesando etapa del pipeline.',metrics:[],highlight:''};"
+        "var root=mountPortal(doc);"
+        "var mm=root.querySelector('#ptm-medal');var mt=root.querySelector('#ptm-title');"
+        "var md=root.querySelector('#ptm-desc');var mh=root.querySelector('#ptm-highlight');"
+        "var ml=root.querySelector('#ptm-metrics');var mb=root.querySelector('#ptm-badge');"
+        "mm.className='ptm-medal '+mc;mm.textContent=me;mt.textContent=t;"
+        "md.textContent=data.desc;"
+        "if(data.highlight){mh.style.display='inline-block';mh.textContent=data.highlight;}"
+        "else{mh.style.display='none';}"
+        "var metricsHtml='',i;"
+        "if(data.metrics&&data.metrics.length){"
+        "for(i=0;i<data.metrics.length;i++){"
+        "metricsHtml+='<li><span class=\"check-icon\">\u2713</span> '+data.metrics[i]+'</li>';}}"
+        "ml.innerHTML=metricsHtml;"
+        "mb.textContent='\\u26a1 '+s;"
+        "var nv2=STAGE_STATE_MAP[t];if(typeof nv2==='string'){mb.textContent='\\u26a1 '+nv2;}"
+        "root.classList.add('ptm-open');"
+        "doc.getElementById('ptm-close-btn').focus();"
         "}"
-
-        "function close(){"
-        "  ov.classList.remove('open');"
-        "}"
-
         "document.addEventListener('click',function(e){"
-        "  var b=e.target.closest('.js-info');"
-        "  if(b){"
-        "    e.stopPropagation();"
-        "    open(b.dataset.title,b.dataset.mclass,b.dataset.memoji,b.dataset.state);"
-        "    return;"
-        "  }"
-        "  if(ov.classList.contains('open')&&!e.target.closest('.modal-card'))close();"
+        "var b=e.target.closest('.js-info');if(!b)return;"
+        "e.stopPropagation();"
+        "openModal(b.dataset.title,b.dataset.mclass,b.dataset.memoji,b.dataset.state);"
         "});"
-
-        "xb.addEventListener('click',close);"
-        "document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});"
-
+        "refreshOpenModal();"
         "})();"
     )
+
+
+def pipeline_timeline_component_height(
+    snapshot: PipelineSnapshot, *, show_completion_hero: bool = False
+) -> int:
+    """Altura del iframe del timeline (debe coincidir con el panel de buckets debajo)."""
+    n_stages = len(snapshot.stages)
+    cards_rows = max(1, -(-n_stages // 5))
+    extra = 60 if show_completion_hero else 0
+    return 135 + cards_rows * 92 + extra
 
 
 def render_pipeline_timeline(
@@ -610,165 +732,21 @@ def render_pipeline_timeline(
     *,
     show_completion_hero: bool = False,
     tracked_manual_run_id: str | None = None,
+    ui_locked: bool = False,
 ) -> None:
     tracks       = pipeline_tracks_manual_run(snapshot, tracked_manual_run_id)
     progress_pct = int(snapshot.overall_progress * 100) if tracks else 0
-    object_left  = min(max(progress_pct, 2), 100)
+    # Sin progreso: bolita al inicio del track (antes min 2 % empujaba el indicador a la derecha).
+    object_left  = min(max(progress_pct, 0), 100)
 
     pipeline_html = _build_html(
         snapshot=snapshot,
         progress_pct=progress_pct,
         object_left=object_left,
         show_completion_hero=show_completion_hero,
-    st.markdown(
-        """
-        <style>
-          .pipeline-shell {
-            background: linear-gradient(160deg, rgba(18,18,18,1) 0%, rgba(12,12,12,1) 100%);
-            border: 1px solid rgba(222,255,154,0.22);
-            border-radius: 16px;
-            padding: 1.1rem 1.1rem 1.3rem;
-            margin: 0.4rem 0 0.8rem 0;
-          }
-          .pipeline-top { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
-          .pipeline-top h3 { margin: 0; color: #f6ffe6; font-size: 1.08rem; font-weight: 700; }
-          .pipeline-status {
-            font-size: 0.78rem; font-weight: 700; border-radius: 999px; padding: 0.27rem 0.65rem;
-            border: 1px solid transparent; letter-spacing: 0.03em;
-          }
-          .status-waiting { background: rgba(145,145,145,0.16); color: #d9d9d9; border-color: rgba(145,145,145,0.4); }
-          .status-running { background: rgba(70,150,255,0.15); color: #8fc4ff; border-color: rgba(70,150,255,0.5); }
-          .status-done { background: rgba(91,196,112,0.14); color: #85e09a; border-color: rgba(91,196,112,0.46); }
-          .status-error { background: rgba(245,96,96,0.14); color: #ff8f8f; border-color: rgba(245,96,96,0.46); }
-          .status-retry { background: rgba(255,180,70,0.15); color: #ffc579; border-color: rgba(255,180,70,0.52); }
-          .line-wrap { position: relative; margin: 1.2rem 0 0.5rem; }
-          .line-track {
-            position: relative; width: 100%; height: 8px; border-radius: 999px;
-            background: linear-gradient(90deg, #2a2a2a 0%, #363636 100%);
-            border: 1px solid #3d3d3d;
-          }
-          .line-progress {
-            position: absolute; top: 0; left: 0; height: 100%; border-radius: 999px;
-            background: linear-gradient(90deg, #9edc68 0%, #deff9a 100%);
-            box-shadow: 0 0 18px rgba(222,255,154,0.35);
-            transition: width 900ms ease;
-          }
-          .line-object {
-            position: absolute; top: 50%; transform: translate(-50%, -50%);
-            width: 18px; height: 18px; border-radius: 50%;
-            background: radial-gradient(circle at 30% 30%, #fff8d8, #deff9a 55%, #8abf50 100%);
-            border: 2px solid rgba(9,9,9,0.5);
-            box-shadow: 0 0 18px rgba(222,255,154,0.58);
-            transition: left 900ms ease;
-            animation: pulseGlow 1600ms infinite;
-          }
-          .line-object.at-start { transform: translate(0, -50%); }
-          @keyframes pulseGlow {
-            0% { box-shadow: 0 0 10px rgba(222,255,154,0.4); }
-            50% { box-shadow: 0 0 22px rgba(222,255,154,0.8); }
-            100% { box-shadow: 0 0 10px rgba(222,255,154,0.4); }
-          }
-          .stage-grid {
-            margin-top: 0.9rem;
-            display: grid; gap: 0.45rem;
-            grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
-          }
-          .stage-card {
-            border: 1px solid #2d2d2d; background: #181818; border-radius: 12px; padding: 0.65rem 0.55rem 0.6rem;
-            min-height: 72px;
-          }
-          .stage-head {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 0.45rem;
-            text-align: center;
-          }
-          .stage-medal {
-            width: 2.15rem;
-            height: 2.15rem;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.12rem;
-            line-height: 1;
-            border: 1px solid rgba(255,255,255,0.12);
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 2px 6px rgba(0,0,0,0.35);
-          }
-          .medal-bronze {
-            background: radial-gradient(circle at 32% 28%, #e8a060, #8b4513 58%, #4a2509 100%);
-          }
-          .medal-silver {
-            background: radial-gradient(circle at 32% 28%, #f2f2f2, #a8aeb8 55%, #5c636b 100%);
-          }
-          .medal-gold {
-            background: radial-gradient(circle at 32% 28%, #fff4b8, #e8c547 50%, #a67c00 100%);
-          }
-          .stage-body {
-            width: 100%;
-            text-align: center;
-          }
-          .stage-card .title {
-            margin: 0;
-            color: #ececec;
-            font-size: 0.84rem;
-            font-weight: 600;
-            line-height: 1.25;
-            text-align: center;
-          }
-          .stage-card .meta {
-            margin-top: 0.24rem;
-            font-size: 0.76rem;
-            color: #b8b8b8;
-            text-align: center;
-          }
-          .stage-card.running { border-color: rgba(94,175,255,0.6); }
-          .stage-card.done { border-color: rgba(91,196,112,0.62); }
-          .stage-card.error { border-color: rgba(245,96,96,0.62); }
-          .stage-card.retry { border-color: rgba(255,180,70,0.62); }
-          .completion-hero {
-            margin: 0.85rem 0 0.35rem 0;
-            padding: 0.85rem 1rem;
-            border-radius: 14px;
-            text-align: center;
-            font-size: clamp(1.35rem, 2.8vw, 1.85rem);
-            font-weight: 800;
-            line-height: 1.2;
-            color: #0d1408;
-            background: linear-gradient(120deg, #c8f090 0%, #deff9a 45%, #b8e86a 100%);
-            border: 1px solid rgba(222,255,154,0.85);
-            box-shadow: 0 0 28px rgba(222,255,154,0.28);
-          }
-        </style>
-        """,
-        unsafe_allow_html=True,
+        ui_locked=ui_locked,
     )
 
-    tracks = pipeline_tracks_manual_run(snapshot, tracked_manual_run_id)
-    progress_pct = int(snapshot.overall_progress * 100) if tracks else 0
-    object_left = min(max(progress_pct, 0), 100)
-    object_at_start = progress_pct <= 0
-
-    completion_block = ""
-    if show_completion_hero:
-        completion_block = (
-            '<div class="completion-hero" role="status">¡Están listos tus datos!</div>'
-        )
-
-    pipeline_header = (
-        f'<div class="pipeline-shell">'
-        f'<div class="pipeline-top"><h3>{html.escape(snapshot.dag_id)}</h3>{_status_chip(snapshot)}</div>'
-        f"{completion_block}"
-        f'<div class="line-wrap"><div class="line-track">'
-        f'<div class="line-progress" style="width:{progress_pct}%;"></div>'
-        f'<div class="line-object{" at-start" if object_at_start else ""}" style="left:{object_left}%;"></div>'
-        f"</div></div>"
-    )
-
-    n_stages   = len(snapshot.stages)
-    cards_rows = max(1, -(-n_stages // 5))
-    extra      = 60 if show_completion_hero else 0
-    height     = 135 + cards_rows * 92 + extra
+    height = pipeline_timeline_component_height(snapshot, show_completion_hero=show_completion_hero)
 
     components.html(pipeline_html, height=height, scrolling=False)

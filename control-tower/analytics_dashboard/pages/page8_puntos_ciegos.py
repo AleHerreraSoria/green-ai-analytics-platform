@@ -14,109 +14,10 @@ import plotly.graph_objects as go
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from s3_connection import load_fact_table, load_dimension
+from gold_analytics import data_source_caption, load_gold_bundle, page8_blindspots
+from plotly_theme import apply_control_tower_plotly_theme
 
 
-def aplicar_tema_plotly(fig):
-    """Aplicar estilo común a gráficos Plotly sobre fondo verde oscuro.
-
-    Objetivos:
-    - textos blancos en títulos, ejes, leyendas y anotaciones;
-    - leyendas horizontales debajo del área del gráfico para no superponer títulos;
-    - ocultar barras laterales de escala/color;
-    - mantener fondo transparente para integrarse con Streamlit.
-    """
-    text_color = "#ffffff"
-    grid_color = "rgba(255,255,255,0.25)"
-    transparent = "rgba(0,0,0,0)"
-
-    fig.update_layout(
-        font=dict(color=text_color),
-        title=dict(
-            font=dict(color=text_color, size=15),
-            x=0,
-            xanchor="left",
-            y=0.98,
-            yanchor="top"
-        ),
-        plot_bgcolor=transparent,
-        paper_bgcolor=transparent,
-        margin=dict(l=70, r=30, t=85, b=105),
-        coloraxis_showscale=False,
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            xanchor="center",
-            x=0.5,
-            font=dict(color=text_color, size=11),
-            title_font=dict(color=text_color, size=11),
-            bgcolor=transparent,
-            borderwidth=0,
-            itemsizing="constant",
-            tracegroupgap=6
-        )
-    )
-
-    # Ocultar cualquier escala de color asociada a coloraxis, coloraxis2, etc.
-    for layout_key in list(fig.layout):
-        if str(layout_key).startswith("coloraxis"):
-            try:
-                fig.layout[layout_key].showscale = False
-            except Exception:
-                pass
-
-    fig.update_xaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_yaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_annotations(font=dict(color=text_color))
-
-    try:
-        fig.update_geos(
-            bgcolor=transparent,
-            lakecolor=transparent,
-            landcolor="rgba(0,56,23,0.20)",
-            coastlinecolor=grid_color,
-            framecolor=grid_color
-        )
-    except Exception:
-        pass
-
-    # Ocultar barras laterales de escala/color en trazas individuales.
-    for trace in fig.data:
-        try:
-            trace.update(showscale=False)
-        except Exception:
-            pass
-
-        if hasattr(trace, "marker") and trace.marker is not None:
-            try:
-                trace.marker.update(showscale=False)
-            except Exception:
-                pass
-
-        if hasattr(trace, "textfont"):
-            try:
-                trace.update(textfont=dict(color=text_color))
-            except Exception:
-                pass
-
-    return fig
 
 def render():
     """Renderizar Página 8: Puntos ciegos de sostenibilidad."""
@@ -126,25 +27,10 @@ def render():
     
     st.markdown("---")
     
-    # ==================== KPIs ====================
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("🔴 Territorios Críticos", "12")
-    
-    with col2:
-        st.metric("⚠️ Territorio Más Crítico", "India (IN)")
-    
-    with col3:
-        st.metric("📊 Score Promedio de Riesgo", "72/100")
-    
-    st.markdown("---")
-    
-    # ==================== VISUAL PRINCIPAL: Scatter en Cuadrantes ====================
-    st.subheader("🎯 Scatter Plot: Demanda Tecnológica vs Intensidad de Carbono")
-    
-    # Datos de territorios
-    territory_data = pd.DataFrame([
+    bundle = load_gold_bundle()
+    territory_data, ok_b = page8_blindspots(bundle)
+    if not ok_b or territory_data.empty:
+        territory_data = pd.DataFrame([
         {
             'Territorio': 'India',
             'Demanda_Tecnologica': 85,
@@ -272,7 +158,8 @@ def render():
             'Región': 'Norteamérica'
         }
     ])
-    
+    data_source_caption(ok_b, "Demanda = energía agregada por región AWS (proxy); intensidad = media grid por zona.")
+
     # Clasificar en cuadrantes
     def classify_quadrant(row):
         if row['Demanda_Tecnologica'] >= 50 and row['Intensidad_Carbono'] >= 400:
@@ -285,6 +172,19 @@ def render():
             return 'Sostenible'
     
     territory_data['Cuadrante'] = territory_data.apply(classify_quadrant, axis=1)
+
+    col_k1, col_k2, col_k3 = st.columns(3)
+    n_crit = int((territory_data["Cuadrante"] == "Crítico").sum())
+    worst = territory_data.nlargest(1, "Score_Riesgo") if "Score_Riesgo" in territory_data.columns else pd.DataFrame()
+    avg_r = float(territory_data["Score_Riesgo"].mean()) if "Score_Riesgo" in territory_data.columns else 0.0
+    with col_k1:
+        st.metric("🔴 Territorios Críticos", str(n_crit))
+    with col_k2:
+        st.metric("⚠️ Mayor Score", str(worst.iloc[0]["Territorio"]) if not worst.empty else "—")
+    with col_k3:
+        st.metric("📊 Score Promedio", f"{avg_r:.0f}")
+
+    st.markdown("---")
     
     fig_scatter = px.scatter(
         territory_data,
@@ -312,7 +212,7 @@ def render():
     fig_scatter.update_traces(
         marker=dict(
             size=14,
-            line=dict(width=1, color='#ffffff')
+            line=dict(width=1, color='#f2f2f2')
         )
     )
     
@@ -324,11 +224,11 @@ def render():
         height=450,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff"),
+        font=dict(color="#f2f2f2"),
         legend=dict(orientation="h", y=1.05)
     )
     
-    fig_scatter = aplicar_tema_plotly(fig_scatter)
+    fig_scatter = apply_control_tower_plotly_theme(fig_scatter)
     
     st.plotly_chart(fig_scatter, width='stretch')
     
@@ -382,9 +282,9 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_matrix = aplicar_tema_plotly(fig_matrix)
+        fig_matrix = apply_control_tower_plotly_theme(fig_matrix)
         st.plotly_chart(fig_matrix, width='stretch')
     
     with col_ranking:
@@ -405,9 +305,9 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_ranking = aplicar_tema_plotly(fig_ranking)
+        fig_ranking = apply_control_tower_plotly_theme(fig_ranking)
         st.plotly_chart(fig_ranking, width='stretch')
     
     # ==================== MAPA DE RIESGO ====================
@@ -438,9 +338,9 @@ def render():
         ),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff")
+        font=dict(color="#f2f2f2")
     )
-    fig_map = aplicar_tema_plotly(fig_map)
+    fig_map = apply_control_tower_plotly_theme(fig_map)
     st.plotly_chart(fig_map, width='stretch')
     
     # ==================== EXPLICACIÓN ====================

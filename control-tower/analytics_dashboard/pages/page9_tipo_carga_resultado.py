@@ -7,6 +7,7 @@ Visual principal: Bar chart agrupado (job_type × execution_status)
 Soporte: 100% stacked bar, Boxplot, Tabla resumen
 """
 import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -15,109 +16,10 @@ import numpy as np
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from s3_connection import load_fact_table, load_dimension
+from gold_analytics import data_source_caption, load_gold_bundle, page9_jobs
+from plotly_theme import apply_control_tower_plotly_theme
 
 
-def aplicar_tema_plotly(fig):
-    """Aplicar estilo común a gráficos Plotly sobre fondo verde oscuro.
-
-    Objetivos:
-    - textos blancos en títulos, ejes, leyendas y anotaciones;
-    - leyendas horizontales debajo del área del gráfico para no superponer títulos;
-    - ocultar barras laterales de escala/color;
-    - mantener fondo transparente para integrarse con Streamlit.
-    """
-    text_color = "#ffffff"
-    grid_color = "rgba(255,255,255,0.25)"
-    transparent = "rgba(0,0,0,0)"
-
-    fig.update_layout(
-        font=dict(color=text_color),
-        title=dict(
-            font=dict(color=text_color, size=15),
-            x=0,
-            xanchor="left",
-            y=0.98,
-            yanchor="top"
-        ),
-        plot_bgcolor=transparent,
-        paper_bgcolor=transparent,
-        margin=dict(l=70, r=30, t=85, b=105),
-        coloraxis_showscale=False,
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            xanchor="center",
-            x=0.5,
-            font=dict(color=text_color, size=11),
-            title_font=dict(color=text_color, size=11),
-            bgcolor=transparent,
-            borderwidth=0,
-            itemsizing="constant",
-            tracegroupgap=6
-        )
-    )
-
-    # Ocultar cualquier escala de color asociada a coloraxis, coloraxis2, etc.
-    for layout_key in list(fig.layout):
-        if str(layout_key).startswith("coloraxis"):
-            try:
-                fig.layout[layout_key].showscale = False
-            except Exception:
-                pass
-
-    fig.update_xaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_yaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_annotations(font=dict(color=text_color))
-
-    try:
-        fig.update_geos(
-            bgcolor=transparent,
-            lakecolor=transparent,
-            landcolor="rgba(0,56,23,0.20)",
-            coastlinecolor=grid_color,
-            framecolor=grid_color
-        )
-    except Exception:
-        pass
-
-    # Ocultar barras laterales de escala/color en trazas individuales.
-    for trace in fig.data:
-        try:
-            trace.update(showscale=False)
-        except Exception:
-            pass
-
-        if hasattr(trace, "marker") and trace.marker is not None:
-            try:
-                trace.marker.update(showscale=False)
-            except Exception:
-                pass
-
-        if hasattr(trace, "textfont"):
-            try:
-                trace.update(textfont=dict(color=text_color))
-            except Exception:
-                pass
-
-    return fig
 
 def render():
     """Renderizar Página 9: Comparación por tipo de carga y resultado."""
@@ -127,31 +29,44 @@ def render():
     
     st.markdown("---")
     
+    bundle = load_gold_bundle()
+    job_data, ok_j = page9_jobs(bundle)
+    if not ok_j or job_data.empty:
+        job_data = pd.DataFrame({
+            'job_type': ['Training'] * 2 + ['Fine-tuning'] * 2 + ['Inference'] * 2,
+            'execution_status': ['Success', 'Failed'] * 3,
+            'energy_kwh': [45000, 12000, 28000, 8500, 15000, 3200],
+            'cost_usd': [22500, 6000, 14000, 4250, 7500, 1600],
+            'emissions_kg': [15750, 4200, 9800, 2975, 5250, 1120]
+        })
+    else:
+        job_data["job_type"] = job_data["job_type"].astype(str).str.title()
+        job_data["execution_status"] = job_data["execution_status"].astype(str).str.title()
+    data_source_caption(ok_j, "Agregación `fact_ai_compute_usage` por `job_type` y `execution_status`.")
+
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)
-    
+    failed_e = job_data[job_data["execution_status"].str.lower() == "failed"]["energy_kwh"].sum() if "execution_status" in job_data.columns else 0
+    top_job = job_data.groupby("job_type")["energy_kwh"].sum().idxmax() if "job_type" in job_data.columns else "—"
+    fail_rate = 0.0
+    if "execution_status" in job_data.columns:
+        tot = len(bundle["usage"]) if not bundle["usage"].empty else 1
+        fails = (bundle["usage"]["execution_status"].astype(str).str.lower() == "failed").sum() if not bundle["usage"].empty and "execution_status" in bundle["usage"].columns else 0
+        fail_rate = fails / max(tot, 1) * 100.0
+
     with col1:
-        st.metric("⚡ Energía Desperdiciada", "125 MWh")
+        st.metric("⚡ Energía en Failed (aprox.)", f"{failed_e/1000:.0f} MWh")
     
     with col2:
-        st.metric("💻 Job Más Costoso", "Training")
+        st.metric("💻 Job con más energía", str(top_job))
     
     with col3:
-        st.metric("📊 Tasa de Fallas", "18%")
+        st.metric("📊 Tasa de Fallas (filas)", f"{fail_rate:.0f}%")
     
     st.markdown("---")
     
     # ==================== VISUAL PRINCIPAL: Bar Chart Agrupado ====================
     st.subheader("📊 Bar Chart: Energía por Tipo de Job y Estado")
-    
-    # Datos de jobs
-    job_data = pd.DataFrame({
-        'job_type': ['Training'] * 2 + ['Fine-tuning'] * 2 + ['Inference'] * 2,
-        'execution_status': ['Success', 'Failed'] * 3,
-        'energy_kwh': [45000, 12000, 28000, 8500, 15000, 3200],
-        'cost_usd': [22500, 6000, 14000, 4250, 7500, 1600],
-        'emissions_kg': [15750, 4200, 9800, 2975, 5250, 1120]
-    })
     
     # Selector de métrica
     metric = st.radio(
@@ -178,11 +93,11 @@ def render():
         height=450,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff"),
+        font=dict(color="#f2f2f2"),
         legend=dict(orientation="h", y=1.05)
     )
     
-    fig_bar = aplicar_tema_plotly(fig_bar)
+    fig_bar = apply_control_tower_plotly_theme(fig_bar)
     
     st.plotly_chart(fig_bar, width='stretch')
     
@@ -194,17 +109,28 @@ def render():
     with col_stack:
         st.subheader("📈 100% Stacked Bar: Proporción de Failed")
         
-        # Calcular proporciones
-        stacked_data = pd.DataFrame({
-            'job_type': ['Training', 'Fine-tuning', 'Inference'],
-            'Success': [79, 77, 82],
-            'Failed': [21, 23, 18]
-        })
-        
+        if ok_j and not job_data.empty:
+            pvt = job_data.pivot_table(
+                index="job_type",
+                columns="execution_status",
+                values="energy_kwh",
+                aggfunc="sum",
+                fill_value=0,
+            )
+            rs = pvt.sum(axis=1).replace(0, np.nan)
+            stacked_data = pvt.div(rs, axis=0) * 100.0
+            stacked_data = stacked_data.reset_index()
+        else:
+            stacked_data = pd.DataFrame({
+                'job_type': ['Training', 'Fine-tuning', 'Inference'],
+                'Success': [79, 77, 82],
+                'Failed': [21, 23, 18]
+            })
+        y_cols = [c for c in stacked_data.columns if c != "job_type"]
         fig_stack = px.bar(
             stacked_data,
             x='job_type',
-            y=['Success', 'Failed'],
+            y=y_cols,
             title="Proporción Success vs Failed por Tipo de Job",
             color_discrete_map={
                 'Success': '#10b981',
@@ -218,10 +144,10 @@ def render():
             barmode='stack',
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff"),
+            font=dict(color="#f2f2f2"),
             yaxis_title="Porcentaje"
         )
-        fig_stack = aplicar_tema_plotly(fig_stack)
+        fig_stack = apply_control_tower_plotly_theme(fig_stack)
         st.plotly_chart(fig_stack, width='stretch')
     
     with col_box:
@@ -257,9 +183,9 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_box = aplicar_tema_plotly(fig_box)
+        fig_box = apply_control_tower_plotly_theme(fig_box)
         st.plotly_chart(fig_box, width='stretch')
     
     # ==================== TABLA RESUMEN ====================

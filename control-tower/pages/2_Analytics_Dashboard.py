@@ -6,7 +6,6 @@ Mantiene intacta la app actual de control-tower y agrega una nueva pagina.
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
 
 import streamlit as st
@@ -35,48 +34,49 @@ def _load_page_module(page_module_name: str):
     return module
 
 
-def _inject_dashboard_styles() -> None:
-    """Aplica estilos base del dashboard original solo para esta pagina."""
+def _inject_analytics_section_styles() -> None:
+    """Layout y tipografía alineados con `main.py`; respeta el theme global (.streamlit/config.toml)."""
     st.markdown(
         """
         <style>
-            html, body, .stApp,
-            div[data-testid="stAppViewContainer"],
-            div[data-testid="stMain"] {
-                background-color: #003817 !important;
-                color: #ffffff !important;
-            }
-
-            .main, .block-container, section.main,
-            div[data-testid="stVerticalBlock"] {
-                background-color: #003817 !important;
-                color: #ffffff !important;
-            }
-
-            section[data-testid="stSidebar"] {
-                background-color: #002B12 !important;
-            }
-
-            section[data-testid="stSidebar"],
-            section[data-testid="stSidebar"] * {
-                color: #ffffff !important;
-            }
-
-            .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
-            .stApp p, .stApp li, .stApp label,
-            .stApp div[data-testid="stMarkdownContainer"],
-            .stApp div[data-testid="stMarkdownContainer"] *,
-            .stApp div[data-testid="stHeading"],
-            .stApp div[data-testid="stHeading"] * {
-                color: #ffffff !important;
-            }
-
-            .stButton > button {
-                background-color: #10B981 !important;
-                color: #ffffff !important;
-                border-radius: 10px !important;
-                border: none !important;
-            }
+          /* Misma rejilla que la landing para que el salto entre páginas sea imperceptible */
+          .main .block-container {
+            padding-top: 1.25rem;
+            padding-bottom: 3rem;
+            max-width: min(96vw, 1720px);
+            padding-left: clamp(1rem, 3vw, 2.5rem);
+            padding-right: clamp(1rem, 3vw, 2.5rem);
+            font-size: 1.08rem;
+          }
+          .main h2 { font-size: 1.55rem !important; }
+          .main h3 { font-size: 1.2rem !important; }
+          .page-header {
+            font-size: clamp(1.35rem, 2.2vw, 1.85rem);
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            margin: 0 0 0.35rem 0;
+            color: #f7fff0;
+          }
+          .page-subheader {
+            font-size: clamp(1rem, 1.25vw, 1.12rem);
+            color: #cfcfcf;
+            margin: 0 0 1rem 0;
+            line-height: 1.45;
+          }
+          div[data-testid="stMetricValue"] { font-size: 1.85rem !important; }
+          div[data-testid="stMetricLabel"] { font-size: 1rem !important; }
+          /* Home del dashboard (clases locales) */
+          .ad-home-title {
+            font-size: clamp(1.6rem, 2.5vw, 2.35rem);
+            font-weight: 700;
+            color: #f7fff0;
+            margin-bottom: 0.5rem;
+          }
+          .ad-home-subtitle {
+            font-size: clamp(1rem, 1.25vw, 1.18rem);
+            color: #d6d6d6;
+            margin-bottom: 2rem;
+          }
         </style>
         """,
         unsafe_allow_html=True,
@@ -88,8 +88,14 @@ def main() -> None:
     ensure_dotenv_loaded()
     load_dotenv(DASHBOARD_DIR / ".env", override=False)
 
-    st.sidebar.title("🌱 Green AI Dashboard")
-    st.sidebar.markdown("---")
+    _inject_analytics_section_styles()
+
+    st.sidebar.markdown("### Green AI Analytics Platform")
+    st.sidebar.caption(
+        "Indicadores y narrativas del modelo analítico; misma shell que Pipeline Live y Home."
+    )
+    st.sidebar.divider()
+    st.sidebar.markdown("**Navegación**")
 
     page_map = {
         "🏠 Portada": "home",
@@ -106,10 +112,14 @@ def main() -> None:
         "📖 Metodología": "methodology",
     }
 
-    selected_page = st.sidebar.radio("Navegación dashboard", list(page_map.keys()))
+    selected_page = st.sidebar.radio(
+        "Sección del dashboard",
+        list(page_map.keys()),
+        label_visibility="visible",
+    )
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Filtros Globales")
+    st.sidebar.divider()
+    st.sidebar.markdown("**Filtros globales**")
     st.session_state["year_filter"] = st.sidebar.selectbox(
         "Año", options=["Todos", "2024", "2023", "2022"], index=0
     )
@@ -118,8 +128,6 @@ def main() -> None:
         options=["Todas", "us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"],
         index=0,
     )
-
-    _inject_dashboard_styles()
 
     module_name = page_map[selected_page]
     try:

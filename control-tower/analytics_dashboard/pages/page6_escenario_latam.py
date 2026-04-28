@@ -14,109 +14,10 @@ import plotly.graph_objects as go
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from s3_connection import load_fact_table, load_dimension
+from gold_analytics import data_source_caption, load_gold_bundle, page6_latam_scenario
+from plotly_theme import apply_control_tower_plotly_theme
 
 
-def aplicar_tema_plotly(fig):
-    """Aplicar estilo común a gráficos Plotly sobre fondo verde oscuro.
-
-    Objetivos:
-    - textos blancos en títulos, ejes, leyendas y anotaciones;
-    - leyendas horizontales debajo del área del gráfico para no superponer títulos;
-    - ocultar barras laterales de escala/color;
-    - mantener fondo transparente para integrarse con Streamlit.
-    """
-    text_color = "#ffffff"
-    grid_color = "rgba(255,255,255,0.25)"
-    transparent = "rgba(0,0,0,0)"
-
-    fig.update_layout(
-        font=dict(color=text_color),
-        title=dict(
-            font=dict(color=text_color, size=15),
-            x=0,
-            xanchor="left",
-            y=0.98,
-            yanchor="top"
-        ),
-        plot_bgcolor=transparent,
-        paper_bgcolor=transparent,
-        margin=dict(l=70, r=30, t=85, b=105),
-        coloraxis_showscale=False,
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            xanchor="center",
-            x=0.5,
-            font=dict(color=text_color, size=11),
-            title_font=dict(color=text_color, size=11),
-            bgcolor=transparent,
-            borderwidth=0,
-            itemsizing="constant",
-            tracegroupgap=6
-        )
-    )
-
-    # Ocultar cualquier escala de color asociada a coloraxis, coloraxis2, etc.
-    for layout_key in list(fig.layout):
-        if str(layout_key).startswith("coloraxis"):
-            try:
-                fig.layout[layout_key].showscale = False
-            except Exception:
-                pass
-
-    fig.update_xaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_yaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_annotations(font=dict(color=text_color))
-
-    try:
-        fig.update_geos(
-            bgcolor=transparent,
-            lakecolor=transparent,
-            landcolor="rgba(0,56,23,0.20)",
-            coastlinecolor=grid_color,
-            framecolor=grid_color
-        )
-    except Exception:
-        pass
-
-    # Ocultar barras laterales de escala/color en trazas individuales.
-    for trace in fig.data:
-        try:
-            trace.update(showscale=False)
-        except Exception:
-            pass
-
-        if hasattr(trace, "marker") and trace.marker is not None:
-            try:
-                trace.marker.update(showscale=False)
-            except Exception:
-                pass
-
-        if hasattr(trace, "textfont"):
-            try:
-                trace.update(textfont=dict(color=text_color))
-            except Exception:
-                pass
-
-    return fig
 
 def render():
     """Renderizar Página 6: Escenario +20% adopción de IA en Latam."""
@@ -126,30 +27,38 @@ def render():
     
     st.markdown("---")
     
+    bundle = load_gold_bundle()
+    scenario_data, ok_sc = page6_latam_scenario(bundle)
+    if not ok_sc or scenario_data.empty:
+        scenario_data = pd.DataFrame({
+            'País': ['Brasil', 'México', 'Argentina', 'Colombia', 'Chile', 'Perú'],
+            'Base_kWh': [4500000, 3200000, 1800000, 1200000, 950000, 850000],
+            'Incremento_kWh': [900000, 640000, 360000, 240000, 190000, 170000],
+            'Intensidad_Carbono': [85, 380, 210, 180, 320, 290]
+        })
+    data_source_caption(ok_sc, "Base = suma `energy_consumed_kwh` por país (ISO Latam); +20% escenario.")
+
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)
-    
+    inc_kwh = scenario_data['Incremento_kWh'].sum() if 'Incremento_kWh' in scenario_data.columns else 0
+    scenario_data = scenario_data.copy()
+    scenario_data['Delta_tCO2'] = scenario_data['Incremento_kWh'] * scenario_data['Intensidad_Carbono'] / 1e6
+    inc_co2 = scenario_data['Delta_tCO2'].sum()
+    worst = scenario_data.nlargest(1, 'Delta_tCO2') if 'Delta_tCO2' in scenario_data.columns else pd.DataFrame()
+
     with col1:
-        st.metric("⚡ Aumento Total kWh", "+2.4M kWh")
+        st.metric("⚡ Aumento Total kWh", f"+{inc_kwh/1e6:.2f}M kWh")
     
     with col2:
-        st.metric("🌍 Aumento Total Emisiones", "+850 tCO₂")
+        st.metric("🌍 Aumento Total Emisiones", f"+{inc_co2:,.0f} tCO₂")
     
     with col3:
-        st.metric("🔴 País Mayor Impacto", "Brasil")
+        st.metric("🔴 País Mayor Impacto", str(worst.iloc[0]['País']) if not worst.empty else "—")
     
     st.markdown("---")
     
     # ==================== VISUAL PRINCIPAL: Bar Chart Apilado ====================
     st.subheader("📊 Bar Chart: Base + Incremento + Total por País")
-    
-    # Datos de escenario
-    scenario_data = pd.DataFrame({
-        'País': ['Brasil', 'México', 'Argentina', 'Colombia', 'Chile', 'Perú'],
-        'Base_kWh': [4500000, 3200000, 1800000, 1200000, 950000, 850000],
-        'Incremento_kWh': [900000, 640000, 360000, 240000, 190000, 170000],
-        'Intensidad_Carbono': [85, 380, 210, 180, 320, 290]
-    })
     
     scenario_data['Total_kWh'] = scenario_data['Base_kWh'] + scenario_data['Incremento_kWh']
     scenario_data['Emisiones_Base'] = scenario_data['Base_kWh'] * scenario_data['Intensidad_Carbono'] / 1000000
@@ -180,11 +89,11 @@ def render():
         height=450,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff"),
+        font=dict(color="#f2f2f2"),
         legend=dict(orientation="h", y=1.1)
     )
     
-    fig_bar = aplicar_tema_plotly(fig_bar)
+    fig_bar = apply_control_tower_plotly_theme(fig_bar)
     
     st.plotly_chart(fig_bar, width='stretch')
     
@@ -220,9 +129,9 @@ def render():
             ),
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_map = aplicar_tema_plotly(fig_map)
+        fig_map = apply_control_tower_plotly_theme(fig_map)
         st.plotly_chart(fig_map, width='stretch')
     
     with col_waterfall:
@@ -253,9 +162,9 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_waterfall = aplicar_tema_plotly(fig_waterfall)
+        fig_waterfall = apply_control_tower_plotly_theme(fig_waterfall)
         st.plotly_chart(fig_waterfall, width='stretch')
     
     # ==================== TABLA DE ESCENARIO ====================

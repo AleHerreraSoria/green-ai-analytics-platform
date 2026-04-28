@@ -14,109 +14,10 @@ import plotly.graph_objects as go
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from s3_connection import load_fact_table, load_dimension
+from gold_analytics import data_source_caption, load_gold_bundle, page10_scale
+from plotly_theme import apply_control_tower_plotly_theme
 
 
-def aplicar_tema_plotly(fig):
-    """Aplicar estilo común a gráficos Plotly sobre fondo verde oscuro.
-
-    Objetivos:
-    - textos blancos en títulos, ejes, leyendas y anotaciones;
-    - leyendas horizontales debajo del área del gráfico para no superponer títulos;
-    - ocultar barras laterales de escala/color;
-    - mantener fondo transparente para integrarse con Streamlit.
-    """
-    text_color = "#ffffff"
-    grid_color = "rgba(255,255,255,0.25)"
-    transparent = "rgba(0,0,0,0)"
-
-    fig.update_layout(
-        font=dict(color=text_color),
-        title=dict(
-            font=dict(color=text_color, size=15),
-            x=0,
-            xanchor="left",
-            y=0.98,
-            yanchor="top"
-        ),
-        plot_bgcolor=transparent,
-        paper_bgcolor=transparent,
-        margin=dict(l=70, r=30, t=85, b=105),
-        coloraxis_showscale=False,
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            xanchor="center",
-            x=0.5,
-            font=dict(color=text_color, size=11),
-            title_font=dict(color=text_color, size=11),
-            bgcolor=transparent,
-            borderwidth=0,
-            itemsizing="constant",
-            tracegroupgap=6
-        )
-    )
-
-    # Ocultar cualquier escala de color asociada a coloraxis, coloraxis2, etc.
-    for layout_key in list(fig.layout):
-        if str(layout_key).startswith("coloraxis"):
-            try:
-                fig.layout[layout_key].showscale = False
-            except Exception:
-                pass
-
-    fig.update_xaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_yaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_annotations(font=dict(color=text_color))
-
-    try:
-        fig.update_geos(
-            bgcolor=transparent,
-            lakecolor=transparent,
-            landcolor="rgba(0,56,23,0.20)",
-            coastlinecolor=grid_color,
-            framecolor=grid_color
-        )
-    except Exception:
-        pass
-
-    # Ocultar barras laterales de escala/color en trazas individuales.
-    for trace in fig.data:
-        try:
-            trace.update(showscale=False)
-        except Exception:
-            pass
-
-        if hasattr(trace, "marker") and trace.marker is not None:
-            try:
-                trace.marker.update(showscale=False)
-            except Exception:
-                pass
-
-        if hasattr(trace, "textfont"):
-            try:
-                trace.update(textfont=dict(color=text_color))
-            except Exception:
-                pass
-
-    return fig
 
 def render():
     """Renderizar Página 10: Escala de cómputo vs sostenibilidad."""
@@ -126,43 +27,61 @@ def render():
     
     st.markdown("---")
     
+    bundle = load_gold_bundle()
+    scale_data, ok_s = page10_scale(bundle)
+    if not ok_s or scale_data.empty:
+        scale_data = pd.DataFrame({
+            'País': ['Estados Unidos', 'China', 'Alemania', 'Japón', 'Reino Unido',
+                     'Canadá', 'Francia', 'Corea del Sur', 'India', 'Brasil',
+                     'Australia', 'México', 'Indonesia', 'Rusia', 'Arabia Saudí'],
+            'Volumen_kWh': [4500000, 5200000, 1800000, 2200000, 1500000,
+                            1200000, 1100000, 950000, 850000, 720000,
+                            580000, 450000, 380000, 350000, 280000],
+            'Intensidad_Carbono': [420, 580, 380, 450, 350, 120, 320, 520, 680, 85,
+                                   650, 380, 520, 380, 450],
+            'Participacion': [18, 21, 7, 9, 6, 5, 4, 4, 3, 3,
+                              2, 2, 2, 1, 1],
+            'Región': ['Norteamérica', 'Asia', 'Europa', 'Asia', 'Europa',
+                       'Norteamérica', 'Europa', 'Asia', 'Asia', 'Sudamérica',
+                       'Oceanía', 'Latinoamérica', 'Asia', 'Europa', 'Asia']
+        })
+    data_source_caption(ok_s, "Volumen por país desde `fact_ai_compute_usage`; intensidad por zona→país.")
+
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)
+    from scipy import stats
+    if len(scale_data) >= 2:
+        corr_k, _ = stats.pearsonr(scale_data['Volumen_kWh'], scale_data['Intensidad_Carbono'])
+    else:
+        corr_k = float("nan")
+    pos = scale_data[
+        (scale_data['Volumen_kWh'] > scale_data['Volumen_kWh'].median()) &
+        (scale_data['Intensidad_Carbono'] < scale_data['Intensidad_Carbono'].median())
+    ]
+    neg = scale_data[
+        (scale_data['Volumen_kWh'] > scale_data['Volumen_kWh'].median()) &
+        (scale_data['Intensidad_Carbono'] > scale_data['Intensidad_Carbono'].median())
+    ]
     
     with col1:
-        st.metric("📊 Correlación Volumen-CI", "-0.35")
+        st.metric("📊 Correlación Volumen-CI", f"{corr_k:.2f}" if corr_k == corr_k else "—")
     
     with col2:
-        st.metric("⬆️ Outlier Positivo", "Suecia")
+        st.metric("⬆️ Outlier Positivo", str(pos.iloc[0]['País']) if not pos.empty else "—")
     
     with col3:
-        st.metric("⬇️ Outlier Negativo", "China")
+        st.metric("⬇️ Outlier Negativo", str(neg.iloc[0]['País']) if not neg.empty else "—")
     
     st.markdown("---")
     
     # ==================== VISUAL PRINCIPAL: Scatter Plot ====================
     st.subheader("🎯 Scatter Plot: Volumen de Cómputo vs Intensidad de Carbono")
     
-    # Datos de países
-    scale_data = pd.DataFrame({
-        'País': ['Estados Unidos', 'China', 'Alemania', 'Japón', 'Reino Unido', 
-                'Canadá', 'Francia', 'Corea del Sur', 'India', 'Brasil',
-                'Australia', 'México', 'Indonesia', 'Rusia', 'Arabia Saudí'],
-        'Volumen_kWh': [4500000, 5200000, 1800000, 2200000, 1500000, 
-                       1200000, 1100000, 950000, 850000, 720000,
-                       580000, 450000, 380000, 350000, 280000],
-        'Intensidad_Carbono': [420, 580, 380, 450, 350, 120, 320, 520, 680, 85,
-                              650, 380, 520, 380, 450],
-        'Participacion': [18, 21, 7, 9, 6, 5, 4, 4, 3, 3,
-                         2, 2, 2, 1, 1],
-        'Región': ['Norteamérica', 'Asia', 'Europa', 'Asia', 'Europa', 
-                  'Norteamérica', 'Europa', 'Asia', 'Asia', 'Sudamérica',
-                  'Oceanía', 'Latinoamérica', 'Asia', 'Europa', 'Asia']
-    })
-    
     # Calcular correlación
-    from scipy import stats
-    corr, p_value = stats.pearsonr(scale_data['Volumen_kWh'], scale_data['Intensidad_Carbono'])
+    if len(scale_data) >= 2:
+        corr, p_value = stats.pearsonr(scale_data['Volumen_kWh'], scale_data['Intensidad_Carbono'])
+    else:
+        corr, p_value = float("nan"), float("nan")
     
     fig_scatter = px.scatter(
         scale_data,
@@ -185,7 +104,7 @@ def render():
     fig_scatter.update_traces(
         marker=dict(
             size=14,
-            line=dict(width=1, color='#ffffff')
+            line=dict(width=1, color='#f2f2f2')
         )
     )
     
@@ -204,11 +123,11 @@ def render():
         height=450,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff"),
+        font=dict(color="#f2f2f2"),
         legend=dict(orientation="h", y=1.05)
     )
     
-    fig_scatter = aplicar_tema_plotly(fig_scatter)
+    fig_scatter = apply_control_tower_plotly_theme(fig_scatter)
     
     st.plotly_chart(fig_scatter, width='stretch')
     
@@ -238,9 +157,9 @@ def render():
             height=300,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_pos = aplicar_tema_plotly(fig_pos)
+        fig_pos = apply_control_tower_plotly_theme(fig_pos)
         st.plotly_chart(fig_pos, width='stretch')
     
     with col_ranking:
@@ -264,9 +183,9 @@ def render():
             height=300,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_neg = aplicar_tema_plotly(fig_neg)
+        fig_neg = apply_control_tower_plotly_theme(fig_neg)
         st.plotly_chart(fig_neg, width='stretch')
     
     # ==================== TABLA INTERPRETATIVA ====================

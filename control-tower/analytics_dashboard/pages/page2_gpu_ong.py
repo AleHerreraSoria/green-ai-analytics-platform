@@ -7,117 +7,18 @@ Visual principal: Scatter plot (costo vs emisiones)
 Soporte: Bar chart agrupado, Tabla ranking, Radar chart (opcional)
 """
 import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import numpy as np
 
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from s3_connection import load_fact_table, load_dimension
+from gold_analytics import data_source_caption, load_gold_bundle, page2_gpu_table
+from plotly_theme import apply_control_tower_plotly_theme
 
 
-def aplicar_tema_plotly(fig):
-    """Aplicar estilo común a gráficos Plotly sobre fondo verde oscuro.
-
-    Objetivos:
-    - textos blancos en títulos, ejes, leyendas y anotaciones;
-    - leyendas horizontales debajo del área del gráfico para no superponer títulos;
-    - ocultar barras laterales de escala/color;
-    - mantener fondo transparente para integrarse con Streamlit.
-    """
-    text_color = "#ffffff"
-    grid_color = "rgba(255,255,255,0.25)"
-    transparent = "rgba(0,0,0,0)"
-
-    fig.update_layout(
-        font=dict(color=text_color),
-        title=dict(
-            font=dict(color=text_color, size=15),
-            x=0,
-            xanchor="left",
-            y=0.98,
-            yanchor="top"
-        ),
-        plot_bgcolor=transparent,
-        paper_bgcolor=transparent,
-        margin=dict(l=70, r=30, t=85, b=105),
-        coloraxis_showscale=False,
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            xanchor="center",
-            x=0.5,
-            font=dict(color=text_color, size=11),
-            title_font=dict(color=text_color, size=11),
-            bgcolor=transparent,
-            borderwidth=0,
-            itemsizing="constant",
-            tracegroupgap=6
-        )
-    )
-
-    # Ocultar cualquier escala de color asociada a coloraxis, coloraxis2, etc.
-    for layout_key in list(fig.layout):
-        if str(layout_key).startswith("coloraxis"):
-            try:
-                fig.layout[layout_key].showscale = False
-            except Exception:
-                pass
-
-    fig.update_xaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_yaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_annotations(font=dict(color=text_color))
-
-    try:
-        fig.update_geos(
-            bgcolor=transparent,
-            lakecolor=transparent,
-            landcolor="rgba(0,56,23,0.20)",
-            coastlinecolor=grid_color,
-            framecolor=grid_color
-        )
-    except Exception:
-        pass
-
-    # Ocultar barras laterales de escala/color en trazas individuales.
-    for trace in fig.data:
-        try:
-            trace.update(showscale=False)
-        except Exception:
-            pass
-
-        if hasattr(trace, "marker") and trace.marker is not None:
-            try:
-                trace.marker.update(showscale=False)
-            except Exception:
-                pass
-
-        if hasattr(trace, "textfont"):
-            try:
-                trace.update(textfont=dict(color=text_color))
-            except Exception:
-                pass
-
-    return fig
 
 def render():
     """Renderizar Página 2: Elección de GPU para la ONG."""
@@ -127,31 +28,37 @@ def render():
     
     st.markdown("---")
     
+    bundle = load_gold_bundle()
+    gpu_data, ok_gold = page2_gpu_table(bundle)
+    if not ok_gold or gpu_data.empty:
+        gpu_data = pd.DataFrame({
+            'GPU': ['H100', 'A100', 'V100', 'A10G', 'T4', 'L40', 'L4'],
+            'costo_hora': [4.25, 3.50, 2.80, 1.85, 0.75, 3.10, 1.45],
+            'emisiones_hora_kg': [0.85, 1.20, 1.45, 0.95, 0.55, 1.30, 0.70],
+            'tflops_fp32': [51, 19.5, 14, 12, 8, 30, 8],
+            'tdp_watts': [700, 400, 300, 150, 70, 300, 72]
+        })
+    data_source_caption(ok_gold and not gpu_data.empty, "Agregado `fact_ai_compute_usage` + `dim_gpu_model`.")
+    
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)
+    best = gpu_data.sort_values(['costo_hora', 'emisiones_hora_kg'], na_position='last').iloc[0] if not gpu_data.empty else None
     
     with col1:
-        st.metric("🟢 GPU Recomendada", "H100")
+        st.metric("🟢 GPU Recomendada", str(best['GPU']) if best is not None else "—")
     
     with col2:
-        st.metric("💵 Menor Costo/Hora", "$4.25")
+        v = best['costo_hora'] if best is not None and pd.notna(best.get('costo_hora')) else None
+        st.metric("💵 Menor Costo/Hora", f"${v:.2f}" if v is not None else "—")
     
     with col3:
-        st.metric("🌍 Menor Huella/Hora", "0.85 kgCO₂")
+        v2 = best['emisiones_hora_kg'] if best is not None and pd.notna(best.get('emisiones_hora_kg')) else None
+        st.metric("🌍 Menor Huella/Hora", f"{v2:.2f} kgCO₂" if v2 is not None else "—")
     
     st.markdown("---")
     
     # ==================== VISUAL PRINCIPAL: Scatter Plot ====================
     st.subheader("🎯 Scatter Plot: Costo vs Emisiones por GPU")
-    
-    # Datos de GPUs
-    gpu_data = pd.DataFrame({
-        'GPU': ['H100', 'A100', 'V100', 'A10G', 'T4', 'L40', 'L4'],
-        'costo_hora': [4.25, 3.50, 2.80, 1.85, 0.75, 3.10, 1.45],
-        'emisiones_hora_kg': [0.85, 1.20, 1.45, 0.95, 0.55, 1.30, 0.70],
-        'tflops_fp32': [51, 19.5, 14, 12, 8, 30, 8],
-        'tdp_watts': [700, 400, 300, 150, 70, 300, 72]
-    })
     
     fig_scatter = px.scatter(
         gpu_data,
@@ -178,7 +85,7 @@ def render():
         textposition='top center',
         marker=dict(
             size=16,
-            line=dict(width=1, color='#ffffff')
+            line=dict(width=1, color='#f2f2f2')
         )
     )
     
@@ -186,11 +93,11 @@ def render():
         height=450,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff"),
+        font=dict(color="#f2f2f2"),
         showlegend=False
     )
     
-    fig_scatter = aplicar_tema_plotly(fig_scatter)
+    fig_scatter = apply_control_tower_plotly_theme(fig_scatter)
     fig_scatter.update_layout(showlegend=False, margin=dict(l=70, r=30, t=85, b=70))
     
     st.plotly_chart(fig_scatter, width='stretch')
@@ -231,9 +138,9 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_bar = aplicar_tema_plotly(fig_bar)
+        fig_bar = apply_control_tower_plotly_theme(fig_bar)
         st.plotly_chart(fig_bar, width='stretch')
     
     with col_table:
@@ -243,16 +150,21 @@ def render():
         gpu_ranking = gpu_data.copy()
         
         # Normalizar (menor es mejor para ambas métricas)
-        gpu_ranking['score_costo'] = (gpu_ranking['costo_hora'] - gpu_ranking['costo_hora'].min()) / (gpu_ranking['costo_hora'].max() - gpu_ranking['costo_hora'].min())
-        gpu_ranking['score_emisiones'] = (gpu_ranking['emisiones_hora_kg'] - gpu_ranking['emisiones_hora_kg'].min()) / (gpu_ranking['emisiones_hora_kg'].max() - gpu_ranking['emisiones_hora_kg'].min())
+        rc = max(gpu_ranking['costo_hora'].max() - gpu_ranking['costo_hora'].min(), 1e-9)
+        re = max(gpu_ranking['emisiones_hora_kg'].max() - gpu_ranking['emisiones_hora_kg'].min(), 1e-9)
+        gpu_ranking['score_costo'] = (gpu_ranking['costo_hora'] - gpu_ranking['costo_hora'].min()) / rc
+        gpu_ranking['score_emisiones'] = (gpu_ranking['emisiones_hora_kg'] - gpu_ranking['emisiones_hora_kg'].min()) / re
         gpu_ranking['score_total'] = 0.6 * gpu_ranking['score_costo'] + 0.4 * gpu_ranking['score_emisiones']
         gpu_ranking['rank'] = gpu_ranking['score_total'].rank()
         
         # Ordenar por score (menor es mejor)
         gpu_ranking = gpu_ranking.sort_values('score_total')
-        
-        display_df = gpu_ranking[['GPU', 'costo_hora', 'emisiones_hora_kg', 'tflops_fp32', 'score_total']].head(7)
-        display_df.columns = ['GPU', 'Costo/Hora ($)', 'Emisiones (kgCO₂)', 'TFLOPS', 'Score (↓ mejor)']
+        if "tflops_fp32" not in gpu_ranking.columns:
+            gpu_ranking["tflops_fp32"] = np.nan
+        display_df = gpu_ranking[
+            ["GPU", "costo_hora", "emisiones_hora_kg", "tflops_fp32", "score_total"]
+        ].head(7)
+        display_df.columns = ["GPU", "Costo/Hora ($)", "Emisiones (kgCO₂)", "TFLOPS", "Score (↓ mejor)"]
         
         st.dataframe(
             display_df.style.background_gradient(subset=['Score (↓ mejor)'], cmap='Greens'),

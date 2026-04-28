@@ -14,109 +14,10 @@ import plotly.graph_objects as go
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from s3_connection import load_fact_table, load_dimension
+from gold_analytics import data_source_caption, load_gold_bundle, page5_americas
+from plotly_theme import apply_control_tower_plotly_theme
 
 
-def aplicar_tema_plotly(fig):
-    """Aplicar estilo común a gráficos Plotly sobre fondo verde oscuro.
-
-    Objetivos:
-    - textos blancos en títulos, ejes, leyendas y anotaciones;
-    - leyendas horizontales debajo del área del gráfico para no superponer títulos;
-    - ocultar barras laterales de escala/color;
-    - mantener fondo transparente para integrarse con Streamlit.
-    """
-    text_color = "#ffffff"
-    grid_color = "rgba(255,255,255,0.25)"
-    transparent = "rgba(0,0,0,0)"
-
-    fig.update_layout(
-        font=dict(color=text_color),
-        title=dict(
-            font=dict(color=text_color, size=15),
-            x=0,
-            xanchor="left",
-            y=0.98,
-            yanchor="top"
-        ),
-        plot_bgcolor=transparent,
-        paper_bgcolor=transparent,
-        margin=dict(l=70, r=30, t=85, b=105),
-        coloraxis_showscale=False,
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            xanchor="center",
-            x=0.5,
-            font=dict(color=text_color, size=11),
-            title_font=dict(color=text_color, size=11),
-            bgcolor=transparent,
-            borderwidth=0,
-            itemsizing="constant",
-            tracegroupgap=6
-        )
-    )
-
-    # Ocultar cualquier escala de color asociada a coloraxis, coloraxis2, etc.
-    for layout_key in list(fig.layout):
-        if str(layout_key).startswith("coloraxis"):
-            try:
-                fig.layout[layout_key].showscale = False
-            except Exception:
-                pass
-
-    fig.update_xaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_yaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_annotations(font=dict(color=text_color))
-
-    try:
-        fig.update_geos(
-            bgcolor=transparent,
-            lakecolor=transparent,
-            landcolor="rgba(0,56,23,0.20)",
-            coastlinecolor=grid_color,
-            framecolor=grid_color
-        )
-    except Exception:
-        pass
-
-    # Ocultar barras laterales de escala/color en trazas individuales.
-    for trace in fig.data:
-        try:
-            trace.update(showscale=False)
-        except Exception:
-            pass
-
-        if hasattr(trace, "marker") and trace.marker is not None:
-            try:
-                trace.marker.update(showscale=False)
-            except Exception:
-                pass
-
-        if hasattr(trace, "textfont"):
-            try:
-                trace.update(textfont=dict(color=text_color))
-            except Exception:
-                pass
-
-    return fig
 
 def render():
     """Renderizar Página 5: PIB per cápita y electricidad baja en carbono (América)."""
@@ -126,38 +27,55 @@ def render():
     
     st.markdown("---")
     
+    bundle = load_gold_bundle()
+    america_data, ok_am = page5_americas(bundle)
+    if not ok_am or america_data.empty:
+        america_data = pd.DataFrame({
+            'País': ['Canadá', 'Estados Unidos', 'Chile', 'Puerto Rico', 'Panamá',
+                     'Costa Rica', 'México', 'Colombia', 'Brasil', 'Perú',
+                     'Argentina', 'Ecuador', 'Rep. Dominicana', 'Guatemala', 'El Salvador'],
+            'PIB_per_capita': [55000, 80000, 15000, 35000, 14000, 12000, 11000, 6500, 9000, 6000,
+                               13000, 5500, 8000, 4500, 3500],
+            'Intensidad_Carbono': [120, 420, 320, 450, 280, 150, 380, 180, 85, 290,
+                                   210, 220, 350, 420, 280],
+            'Low_Carbon_Share': [92, 35, 40, 28, 55, 78, 45, 65, 78, 50,
+                                 55, 48, 42, 35, 52],
+            'Subregión': ['Norteamérica', 'Norteamérica', 'Sudamérica', 'Caribe', 'Centroamérica',
+                          'Centroamérica', 'Centroamérica', 'Sudamérica', 'Sudamérica', 'Sudamérica',
+                          'Sudamérica', 'Sudamérica', 'Caribe', 'Centroamérica', 'Centroamérica']
+        })
+    else:
+        america_data['PIB_per_capita'] = america_data['Exportaciones_TIC_MM']
+    data_source_caption(ok_am, "Filtrado ISO América sobre join `dim_country` + intensidad por zona.")
+    
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)
+    from scipy import stats as _st
+    corr_txt = "—"
+    if len(america_data) >= 2:
+        corr_txt = f"{_st.pearsonr(america_data['PIB_per_capita'], america_data['Intensidad_Carbono'])[0]:.2f}"
+    top_pib = america_data.nlargest(1, 'PIB_per_capita') if 'PIB_per_capita' in america_data.columns else pd.DataFrame()
+    top_clean = america_data.nlargest(1, 'Low_Carbon_Share') if 'Low_Carbon_Share' in america_data.columns else pd.DataFrame()
     
     with col1:
-        st.metric("📊 Correlación en América", "0.68")
+        st.metric("📊 Correlación en América", corr_txt)
     
     with col2:
-        st.metric("💰 Mayor PIB per cápita", "Canadá ($55k)")
+        st.metric("💰 Mayor PIB per cápita", str(top_pib.iloc[0]['País']) if not top_pib.empty else "—")
     
     with col3:
-        st.metric("🌱 Red más Limpia", "Canadá (92%)")
+        st.metric("🌱 Red más Limpia", str(top_clean.iloc[0]['País']) if not top_clean.empty else "—")
     
     st.markdown("---")
     
     # ==================== VISUAL PRINCIPAL: Scatter Plot ====================
     st.subheader("🎯 Scatter Plot: PIB per cápita vs Intensidad de Carbono")
-    
-    # Datos de países americanos
-    america_data = pd.DataFrame({
-        'País': ['Canadá', 'Estados Unidos', 'Chile', 'Puerto Rico', 'Panamá', 
-                'Costa Rica', 'México', 'Colombia', 'Brasil', 'Perú', 
-                'Argentina', 'Ecuador', 'Rep. Dominicana', 'Guatemala', 'El Salvador'],
-        'PIB_per_capita': [55000, 80000, 15000, 35000, 14000, 12000, 11000, 6500, 9000, 6000,
-                          13000, 5500, 8000, 4500, 3500],
-        'Intensidad_Carbono': [120, 420, 320, 450, 280, 150, 380, 180, 85, 290,
-                              210, 220, 350, 420, 280],
-        'Low_Carbon_Share': [92, 35, 40, 28, 55, 78, 45, 65, 78, 50,
-                            55, 48, 42, 35, 52],
-        'Subregión': ['Norteamérica', 'Norteamérica', 'Sudamérica', 'Caribe', 'Centroamérica',
-                     'Centroamérica', 'Centroamérica', 'Sudamérica', 'Sudamérica', 'Sudamérica',
-                     'Sudamérica', 'Sudamérica', 'Caribe', 'Centroamérica', 'Centroamérica']
-    })
+
+    america_data = america_data.copy()
+    if "PIB_per_capita" not in america_data.columns and "Exportaciones_TIC_MM" in america_data.columns:
+        america_data["PIB_per_capita"] = america_data["Exportaciones_TIC_MM"]
+    if "Subregión" not in america_data.columns and "Región" in america_data.columns:
+        america_data["Subregión"] = america_data["Región"]
     
     fig_scatter = px.scatter(
         america_data,
@@ -180,7 +98,7 @@ def render():
     fig_scatter.update_traces(
         marker=dict(
             size=14,
-            line=dict(width=1, color='#ffffff')
+            line=dict(width=1, color='#f2f2f2')
         )
     )
     
@@ -188,11 +106,11 @@ def render():
         height=450,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff"),
+        font=dict(color="#f2f2f2"),
         legend=dict(orientation="h", y=1.05)
     )
     
-    fig_scatter = aplicar_tema_plotly(fig_scatter)
+    fig_scatter = apply_control_tower_plotly_theme(fig_scatter)
     
     st.plotly_chart(fig_scatter, width='stretch')
     
@@ -231,9 +149,9 @@ def render():
             ),
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_map = aplicar_tema_plotly(fig_map)
+        fig_map = apply_control_tower_plotly_theme(fig_map)
         st.plotly_chart(fig_map, width='stretch')
     
     with col_ranking:
@@ -254,9 +172,9 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_ranking = aplicar_tema_plotly(fig_ranking)
+        fig_ranking = apply_control_tower_plotly_theme(fig_ranking)
         st.plotly_chart(fig_ranking, width='stretch')
     
     # ==================== SMALL MULTIPLES POR AÑO ====================
@@ -289,10 +207,10 @@ def render():
         height=400,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff")
+        font=dict(color="#f2f2f2")
     )
     
-    fig_small = aplicar_tema_plotly(fig_small)
+    fig_small = apply_control_tower_plotly_theme(fig_small)
     
     st.plotly_chart(fig_small, width='stretch')
     

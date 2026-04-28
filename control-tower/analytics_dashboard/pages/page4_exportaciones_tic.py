@@ -16,109 +16,10 @@ from scipy import stats
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-from s3_connection import load_fact_table, load_dimension
+from gold_analytics import data_source_caption, load_gold_bundle, page4_macro_scatter
+from plotly_theme import apply_control_tower_plotly_theme
 
 
-def aplicar_tema_plotly(fig):
-    """Aplicar estilo común a gráficos Plotly sobre fondo verde oscuro.
-
-    Objetivos:
-    - textos blancos en títulos, ejes, leyendas y anotaciones;
-    - leyendas horizontales debajo del área del gráfico para no superponer títulos;
-    - ocultar barras laterales de escala/color;
-    - mantener fondo transparente para integrarse con Streamlit.
-    """
-    text_color = "#ffffff"
-    grid_color = "rgba(255,255,255,0.25)"
-    transparent = "rgba(0,0,0,0)"
-
-    fig.update_layout(
-        font=dict(color=text_color),
-        title=dict(
-            font=dict(color=text_color, size=15),
-            x=0,
-            xanchor="left",
-            y=0.98,
-            yanchor="top"
-        ),
-        plot_bgcolor=transparent,
-        paper_bgcolor=transparent,
-        margin=dict(l=70, r=30, t=85, b=105),
-        coloraxis_showscale=False,
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            xanchor="center",
-            x=0.5,
-            font=dict(color=text_color, size=11),
-            title_font=dict(color=text_color, size=11),
-            bgcolor=transparent,
-            borderwidth=0,
-            itemsizing="constant",
-            tracegroupgap=6
-        )
-    )
-
-    # Ocultar cualquier escala de color asociada a coloraxis, coloraxis2, etc.
-    for layout_key in list(fig.layout):
-        if str(layout_key).startswith("coloraxis"):
-            try:
-                fig.layout[layout_key].showscale = False
-            except Exception:
-                pass
-
-    fig.update_xaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_yaxes(
-        title_font=dict(color=text_color),
-        tickfont=dict(color=text_color),
-        color=text_color,
-        gridcolor=grid_color,
-        zerolinecolor=grid_color,
-        linecolor=grid_color
-    )
-
-    fig.update_annotations(font=dict(color=text_color))
-
-    try:
-        fig.update_geos(
-            bgcolor=transparent,
-            lakecolor=transparent,
-            landcolor="rgba(0,56,23,0.20)",
-            coastlinecolor=grid_color,
-            framecolor=grid_color
-        )
-    except Exception:
-        pass
-
-    # Ocultar barras laterales de escala/color en trazas individuales.
-    for trace in fig.data:
-        try:
-            trace.update(showscale=False)
-        except Exception:
-            pass
-
-        if hasattr(trace, "marker") and trace.marker is not None:
-            try:
-                trace.marker.update(showscale=False)
-            except Exception:
-                pass
-
-        if hasattr(trace, "textfont"):
-            try:
-                trace.update(textfont=dict(color=text_color))
-            except Exception:
-                pass
-
-    return fig
 
 def render():
     """Renderizar Página 4: Exportaciones TIC y limpieza de la red."""
@@ -128,36 +29,48 @@ def render():
     
     st.markdown("---")
     
+    bundle = load_gold_bundle()
+    scatter_data, ok_g, note = page4_macro_scatter(bundle)
+    if not ok_g or scatter_data.empty:
+        scatter_data = pd.DataFrame({
+            'País': ['Alemania', 'Francia', 'Reino Unido', 'Canadá', 'Japón', 'Corea del Sur',
+                     'Australia', 'Brasil', 'México', 'India', 'China', 'Estados Unidos'],
+            'Exportaciones_TIC_MM': [95, 82, 75, 45, 88, 92, 38, 28, 35, 55, 120, 150],
+            'Intensidad_Carbono': [380, 320, 350, 120, 450, 520, 650, 85, 420, 680, 580, 420],
+            'Low_Carbon_Share': [55, 62, 48, 92, 28, 18, 25, 78, 45, 15, 22, 35],
+            'Región': ['Europa', 'Europa', 'Europa', 'Norteamérica', 'Asia', 'Asia',
+                       'Oceanía', 'Latinoamérica', 'Latinoamérica', 'Asia', 'Asia', 'Norteamérica']
+        })
+        note = ""
+    data_source_caption(ok_g, note or "dim_country + intensidad por zona (`dim_region` + `fact_carbon_intensity_hourly`).")
+    
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)
+    n_p = len(scatter_data)
+    corr_txt = "—"
+    if n_p >= 2:
+        c, _ = stats.pearsonr(scatter_data['Exportaciones_TIC_MM'], scatter_data['Intensidad_Carbono'])
+        corr_txt = f"{c:.2f}"
     
     with col1:
-        st.metric("📊 Correlación Pearson", "0.72")
+        st.metric("📊 Correlación Pearson", corr_txt)
     
     with col2:
-        st.metric("🌍 Países Analizados", "24")
+        st.metric("🌍 Países Analizados", str(n_p))
     
     with col3:
-        st.metric("📅 Período Cubierto", "2020-2024")
+        st.metric("📅 Fuente", "Gold" if ok_g else "Demo")
     
     st.markdown("---")
     
     # ==================== VISUAL PRINCIPAL: Scatter con Regresión ====================
     st.subheader("🎯 Scatter Plot: Exportaciones TIC vs Intensidad de Carbono")
     
-    # Datos de ejemplo
-    scatter_data = pd.DataFrame({
-        'País': ['Alemania', 'Francia', 'Reino Unido', 'Canadá', 'Japón', 'Corea del Sur', 
-                'Australia', 'Brasil', 'México', 'India', 'China', 'Estados Unidos'],
-        'Exportaciones_TIC_MM': [95, 82, 75, 45, 88, 92, 38, 28, 35, 55, 120, 150],
-        'Intensidad_Carbono': [380, 320, 350, 120, 450, 520, 650, 85, 420, 680, 580, 420],
-        'Low_Carbon_Share': [55, 62, 48, 92, 28, 18, 25, 78, 45, 15, 22, 35],
-        'Región': ['Europa', 'Europa', 'Europa', 'Norteamérica', 'Asia', 'Asia', 
-                  'Oceanía', 'Latinoamérica', 'Latinoamérica', 'Asia', 'Asia', 'Norteamérica']
-    })
-    
     # Calcular correlación
-    corr, p_value = stats.pearsonr(scatter_data['Exportaciones_TIC_MM'], scatter_data['Intensidad_Carbono'])
+    if len(scatter_data) >= 2:
+        corr, p_value = stats.pearsonr(scatter_data['Exportaciones_TIC_MM'], scatter_data['Intensidad_Carbono'])
+    else:
+        corr, p_value = float("nan"), float("nan")
     
     # Scatter plot con regresión
     fig_scatter = px.scatter(
@@ -181,31 +94,31 @@ def render():
     fig_scatter.update_traces(
         marker=dict(
             size=14,
-            line=dict(width=1, color='#ffffff')
+            line=dict(width=1, color='#f2f2f2')
         )
     )
     
     # Añadir línea de tendencia
-    z = np.polyfit(scatter_data['Exportaciones_TIC_MM'], scatter_data['Intensidad_Carbono'], 1)
-    p = np.poly1d(z)
-    x_line = np.linspace(scatter_data['Exportaciones_TIC_MM'].min(), scatter_data['Exportaciones_TIC_MM'].max(), 100)
-    
-    fig_scatter.add_trace(go.Scatter(
-        x=x_line, y=p(x_line),
-        mode='lines',
-        name='Tendencia Lineal',
-        line=dict(color='red', dash='dash', width=2)
-    ))
+    if len(scatter_data) >= 2:
+        z = np.polyfit(scatter_data['Exportaciones_TIC_MM'], scatter_data['Intensidad_Carbono'], 1)
+        p = np.poly1d(z)
+        x_line = np.linspace(scatter_data['Exportaciones_TIC_MM'].min(), scatter_data['Exportaciones_TIC_MM'].max(), 100)
+        fig_scatter.add_trace(go.Scatter(
+            x=x_line, y=p(x_line),
+            mode='lines',
+            name='Tendencia Lineal',
+            line=dict(color='red', dash='dash', width=2)
+        ))
     
     fig_scatter.update_layout(
         height=450,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#ffffff"),
+        font=dict(color="#f2f2f2"),
         legend=dict(orientation="h", y=1.05)
     )
     
-    fig_scatter = aplicar_tema_plotly(fig_scatter)
+    fig_scatter = apply_control_tower_plotly_theme(fig_scatter)
     
     st.plotly_chart(fig_scatter, width='stretch')
     
@@ -260,10 +173,10 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff"),
+            font=dict(color="#f2f2f2"),
             legend=dict(orientation="h", y=1.1)
         )
-        fig_line = aplicar_tema_plotly(fig_line)
+        fig_line = apply_control_tower_plotly_theme(fig_line)
         st.plotly_chart(fig_line, width='stretch')
     
     with col_ranking:
@@ -284,9 +197,9 @@ def render():
             height=350,
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#ffffff")
+            font=dict(color="#f2f2f2")
         )
-        fig_ranking = aplicar_tema_plotly(fig_ranking)
+        fig_ranking = apply_control_tower_plotly_theme(fig_ranking)
         st.plotly_chart(fig_ranking, width='stretch')
     
     # ==================== TABLA DE CORRELACIONES ====================
