@@ -51,7 +51,7 @@ def _get_aws_options() -> dict:
     if secret_key and secret_key != "your_secret_key_here":
         options["aws_secret_access_key"] = secret_key
     if session_token:
-        options["aws_session_token"] = session_key
+        options["aws_session_token"] = session_token
     
     return options
 
