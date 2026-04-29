@@ -115,6 +115,29 @@ MERGE_KEYS: dict[str, list[str]] = {
 
 
 # ---------------------------------------------------------------------------
+# Datasets de full-reload por partición
+# ---------------------------------------------------------------------------
+# Estos datasets leen SIEMPRE el conjunto completo de datos desde Bronze
+# (no son incrementales). Para ellos, la estrategia correcta de escritura
+# es replaceWhere: reemplaza atómicamente las particiones afectadas con
+# el source limpio y deduplicado, en lugar de MERGE (que nunca hace DELETE
+# y deja huérfanos los registros contaminados en el target).
+#
+# Criterio de inclusión: el job de transformación lee recursivamente TODOS
+# los archivos del path Bronze en cada ejecución (recursiveFileLookup=true)
+# y el DataFrame resultante representa el estado completo y definitivo de
+# cada partición (year, month) presente en el source.
+REPLACE_PARTITION_DATASETS: set[str] = {
+    # El endpoint /history entrega snapshots actualizados acumulativos.
+    # Cada run re-lee todos los JSON de Bronze y produce el estado óptimo
+    # (mayor updatedAt) para cada (zone, datetime). Con MERGE, las filas
+    # huérfanas de runs anteriores persisten indefinidamente. Con
+    # replaceWhere, cada run sobreescribe limpiamente las particiones.
+    "electricity_maps/carbon_intensity/history",
+}
+
+
+# ---------------------------------------------------------------------------
 # Resultado de escritura
 # ---------------------------------------------------------------------------
 
@@ -140,6 +163,111 @@ class WriteResult:
 # ---------------------------------------------------------------------------
 # Helper central de escritura idempotente (MERGE / bootstrap)
 # ---------------------------------------------------------------------------
+
+def _delta_replace_partitions(
+    spark: SparkSession,
+    df: DataFrame,
+    path: str,
+    merge_keys: list[str],
+    partition_by: list[str],
+) -> None:
+    """
+    Escritura idempotente para datasets de full-reload por partición.
+
+    Estrategia: Delta replaceWhere
+    ──────────────────────────────
+    En lugar del patrón MERGE (UPDATE + INSERT, nunca DELETE), esta función
+    usa el modo overwrite con replaceWhere de Delta Lake, que:
+
+      1. Identifica las particiones (year, month, …) presentes en el source.
+      2. Elimina atómicamente TODO el contenido de esas particiones del target.
+      3. Escribe el source limpio (ya deduplicado upstream) en su lugar.
+
+    El resultado es siempre igual al source: idempotente por construcción.
+    Ninguna fila huérfana de ejecuciones anteriores puede sobrevivir.
+
+    Cuándo usar replaceWhere vs MERGE
+    ──────────────────────────────────
+    MERGE es correcto para datasets incrementales donde el source es un
+    "delta" (solo las novedades). replaceWhere es correcto para datasets
+    donde el source es el estado completo de cada partición (full-reload).
+
+    Parámetros
+    ----------
+    spark        : SparkSession activa.
+    df           : DataFrame deduplicado listo para escribir.
+    path         : Ruta S3 de la tabla Delta de destino.
+    merge_keys   : No se usan aquí; se mantiene la firma por consistencia
+                   con _delta_merge() para que el caller sea intercambiable.
+    partition_by : Columnas de partición Hive. Requerido: debe ser no-vacío
+                   para que replaceWhere pueda acotar el reemplazo.
+    """
+    if not DeltaTable.isDeltaTable(spark, path):
+        # ── Bootstrap: primera escritura, tabla nueva ──────────────────────────────
+        logger.info("[REPLACE] Bootstrap (tabla nueva): %s", path)
+        writer = df.write.format("delta").option("compression", "snappy")
+        if partition_by:
+            writer = writer.partitionBy(*partition_by)
+        writer.save(path)
+        return
+
+    # ── Calcular el predicado replaceWhere a partir de las particiones del source ──
+    # Recolectamos los valores distintos de cada columna de partición que
+    # están presentes en el source. Delta usará este predicado para eliminar
+    # solo las particiones afectadas, sin tocar el resto de la tabla.
+    replace_clauses: list[str] = []
+    source_cols = set(df.columns)
+    for part_col in partition_by:
+        if part_col not in source_cols:
+            logger.warning(
+                "[REPLACE] Columna de partición '%s' no encontrada en el source; "
+                "omitida del predicado replaceWhere.",
+                part_col,
+            )
+            continue
+        distinct_vals = [
+            row[part_col]
+            for row in df.select(part_col).distinct().collect()
+            if row[part_col] is not None
+        ]
+        if not distinct_vals:
+            continue
+        if isinstance(distinct_vals[0], str):
+            in_list = ", ".join(f"'{v}'" for v in distinct_vals)
+        else:
+            in_list = ", ".join(str(v) for v in distinct_vals)
+        replace_clauses.append(f"`{part_col}` IN ({in_list})")
+
+    if not replace_clauses:
+        # Sin predicado válido: fall back a overwrite total (raro, defensivo)
+        logger.warning(
+            "[REPLACE] No se pudo construir predicado replaceWhere para '%s'. "
+            "Se usará overwrite completo.",
+            path,
+        )
+        (
+            df.write
+            .format("delta")
+            .mode("overwrite")
+            .option("compression", "snappy")
+            .save(path)
+        )
+        return
+
+    replace_where = " AND ".join(replace_clauses)
+    logger.info(
+        "[REPLACE] replaceWhere sobre '%s': %s", path, replace_where
+    )
+
+    (
+        df.write
+        .format("delta")
+        .mode("overwrite")
+        .option("replaceWhere", replace_where)
+        .option("compression", "snappy")
+        .save(path)
+    )
+
 
 def _delta_merge(
     spark: SparkSession,
@@ -350,7 +478,34 @@ class SilverWriter:
                 # al intentar abrir cientos de conexiones S3A y archivos simultáneamente.
                 df = df.repartition(1, *partition_by)
 
-            if merge_keys:
+            if dataset_key in REPLACE_PARTITION_DATASETS:
+                # ── Estrategia: replaceWhere (full-reload por partición) ───────
+                # Para datasets que re-leen siempre el conjunto completo de
+                # datos desde Bronze. replaceWhere elimina atómicamente las
+                # particiones afectadas y las reescribe limpias, garantizando
+                # que ningún duplicado histórico sobreviva entre ejecuciones.
+                if not partition_by:
+                    logger.error(
+                        "[REPLACE] dataset_key '%s' está en REPLACE_PARTITION_DATASETS "
+                        "pero no tiene partition_by. Se usará MERGE como fallback.",
+                        dataset_key,
+                    )
+                    _delta_merge(
+                        spark=self.spark,
+                        df=df,
+                        path=silver_path,
+                        merge_keys=merge_keys,
+                        partition_by=None,
+                    )
+                else:
+                    _delta_replace_partitions(
+                        spark=self.spark,
+                        df=df,
+                        path=silver_path,
+                        merge_keys=merge_keys or [],
+                        partition_by=partition_by,
+                    )
+            elif merge_keys:
                 # ── Escritura idempotente con MERGE nativo de Delta ────────
                 _delta_merge(
                     spark=self.spark,
