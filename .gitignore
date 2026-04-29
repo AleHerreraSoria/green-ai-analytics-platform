@@ -31,6 +31,14 @@ logs/
 *.log
 
 # ========================
+# ML Control Tower (export Airflow + artefactos; se mantienen .gitkeep)
+# ========================
+control-tower/ML/data/*.parquet
+control-tower/ML/data/*.csv
+control-tower/ML/artifacts/*.joblib
+control-tower/ML/artifacts/*.json
+
+# ========================
 # Datos 
 # ========================
 data/
