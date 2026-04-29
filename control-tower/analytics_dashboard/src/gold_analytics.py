@@ -104,6 +104,7 @@ def normalize_dim_gpu(df: pd.DataFrame) -> pd.DataFrame:
         ):
             ren[c] = "tdp_watts"
     if "tflops_fp32" not in out.columns:
+        # Intentar primero aliases directos
         if c := pick_column(
             out,
             "tflops_fp32",
@@ -115,6 +116,16 @@ def normalize_dim_gpu(df: pd.DataFrame) -> pd.DataFrame:
             "fp32_peak_tflops",
         ):
             ren[c] = "tflops_fp32"
+        # Si no existe pero existe gflops_fp32, crear tflops_fp32 con conversión defensiva
+        elif "gflops_fp32" in out.columns:
+            gflops_col = "gflops_fp32"
+            median_val = out[gflops_col].median()
+            if pd.notna(median_val) and median_val > 1000:
+                # Parece estar en GFLOPS, convertir a TFLOPS
+                out["tflops_fp32"] = out[gflops_col] / 1000.0
+            else:
+                # Usar tal cual como TFLOPS
+                out["tflops_fp32"] = out[gflops_col]
     out = out.rename(columns=ren)
     return out
 
@@ -180,21 +191,41 @@ def normalize_country_energy(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     out = df.copy()
     ren = {}
+    # iso_code desde iso_alpha3
     if "iso_code" not in out.columns:
         if c := pick_column(out, "iso_code", "country_iso", "iso_alpha3"):
             ren[c] = "iso_code"
+    # year
     if "year" not in out.columns:
         if c := pick_column(out, "year", "report_year"):
             ren[c] = "year"
+    # tic_exports_musd desde ict_exports_usd con conversión a millones
     if "tic_exports_musd" not in out.columns:
         if c := pick_column(out, "tic_exports_musd", "exports_ict_million_usd"):
             ren[c] = "tic_exports_musd"
+        elif "ict_exports_usd" in out.columns:
+            # ict_exports_usd puede estar en USD o millones
+            median_val = out["ict_exports_usd"].median()
+            if pd.notna(median_val) and median_val > 1000:
+                # Parece estar en USD, convertir a millones
+                out["tic_exports_musd"] = out["ict_exports_usd"] / 1_000_000
+            else:
+                # Ya parece estar en millones
+                out["tic_exports_musd"] = out["ict_exports_usd"]
+    # carbon_intensity_gco2eq_per_kwh desde carbon_intensity_elec
     if "carbon_intensity_gco2eq_per_kwh" not in out.columns:
         if c := pick_column(out, "carbon_intensity_gco2eq_per_kwh", "grid_carbon_intensity"):
             ren[c] = "carbon_intensity_gco2eq_per_kwh"
+        elif "carbon_intensity_elec" in out.columns:
+            out["carbon_intensity_gco2eq_per_kwh"] = out["carbon_intensity_elec"]
+    # gdp_per_capita_usd desde gdp_per_capita
     if "gdp_per_capita_usd" not in out.columns:
         if c := pick_column(out, "gdp_per_capita_usd", "gdp_per_capita"):
             ren[c] = "gdp_per_capita_usd"
+    # low_carbon_share_pct desde low_carbon_share_elec
+    if "low_carbon_share_pct" not in out.columns:
+        if c := pick_column(out, "low_carbon_share_pct", "low_carbon_share_elec"):
+            ren[c] = "low_carbon_share_pct"
     out = out.rename(columns=ren)
     return out
 
@@ -461,15 +492,118 @@ def page4_macro_scatter(bundle: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, 
 
 
 def page5_americas(bundle: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, bool]:
+    """
+    Página 5: PIB per cápita vs intensidad de carbono en América.
+
+    Prioriza fact_country_energy_annual porque ahí está el PIB per cápita real.
+    Usa page4_macro_scatter solo como fallback.
+    """
+    ce = bundle["country_energy"]
+    ctry = bundle["country"]
+
+    required = {
+        "iso_code",
+        "year",
+        "gdp_per_capita_usd",
+        "carbon_intensity_gco2eq_per_kwh",
+    }
+
+    if not ce.empty and required.issubset(ce.columns):
+        ce2 = ce.copy()
+
+        ce2["iso_code"] = ce2["iso_code"].astype(str).str.upper().str.strip()
+        ce2 = ce2[ce2["iso_code"].isin(AMERICAS_ISO3)].copy()
+
+        ce2["gdp_per_capita_usd"] = pd.to_numeric(
+            ce2["gdp_per_capita_usd"],
+            errors="coerce",
+        )
+        ce2["carbon_intensity_gco2eq_per_kwh"] = pd.to_numeric(
+            ce2["carbon_intensity_gco2eq_per_kwh"],
+            errors="coerce",
+        )
+
+        if "low_carbon_share_pct" in ce2.columns:
+            ce2["low_carbon_share_pct"] = pd.to_numeric(
+                ce2["low_carbon_share_pct"],
+                errors="coerce",
+            )
+        else:
+            ce2["low_carbon_share_pct"] = np.nan
+
+        ce2 = ce2.dropna(
+            subset=[
+                "iso_code",
+                "year",
+                "gdp_per_capita_usd",
+                "carbon_intensity_gco2eq_per_kwh",
+            ]
+        )
+
+        if not ce2.empty:
+            idx = ce2.groupby("iso_code")["year"].idxmax()
+            latest = ce2.loc[idx].copy()
+
+            name_map = {}
+            region_map = {}
+
+            if not ctry.empty and "iso_code" in ctry.columns:
+                ctmp = ctry.copy()
+                ctmp["iso_code"] = ctmp["iso_code"].astype(str).str.upper().str.strip()
+
+                if "country_name" in ctmp.columns:
+                    name_map = dict(zip(ctmp["iso_code"], ctmp["country_name"]))
+
+                if "region" in ctmp.columns:
+                    region_map = dict(zip(ctmp["iso_code"], ctmp["region"]))
+
+            latest["País"] = latest["iso_code"].map(
+                lambda iso: name_map.get(str(iso), str(iso))
+            )
+            latest["PIB_per_capita"] = latest["gdp_per_capita_usd"]
+            latest["Intensidad_Carbono"] = latest["carbon_intensity_gco2eq_per_kwh"]
+            latest["Low_Carbon_Share"] = latest["low_carbon_share_pct"].fillna(50.0)
+            latest["Región"] = latest["iso_code"].map(
+                lambda iso: region_map.get(str(iso), "América")
+            )
+            latest["Subregión"] = latest["Región"]
+
+            cols = [
+                "iso_code",
+                "País",
+                "PIB_per_capita",
+                "Intensidad_Carbono",
+                "Low_Carbon_Share",
+                "Región",
+                "Subregión",
+            ]
+
+            if "tic_exports_musd" in latest.columns:
+                latest["Exportaciones_TIC_MM"] = latest["tic_exports_musd"]
+                cols.append("Exportaciones_TIC_MM")
+
+            return latest[cols].reset_index(drop=True), True
+
+    # Fallback: usar salida macro si no se puede armar desde country_energy.
     df, ok, _ = page4_macro_scatter(bundle)
+
     if df.empty or not ok:
         return pd.DataFrame(), False
+
     if "iso_code" not in df.columns:
         return df, True
+
     sub = df[df["iso_code"].astype(str).str.upper().isin(AMERICAS_ISO3)].copy()
+
     if sub.empty:
         return df, True
-    sub["Subregión"] = sub["Región"]
+
+    if "PIB_per_capita" not in sub.columns and "Exportaciones_TIC_MM" in sub.columns:
+        sub["PIB_per_capita"] = sub["Exportaciones_TIC_MM"]
+
+    if "Subregión" not in sub.columns:
+        sub["Subregión"] = sub["Región"] if "Región" in sub.columns else "América"
+
     return sub, True
 
 

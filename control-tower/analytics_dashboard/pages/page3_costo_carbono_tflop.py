@@ -75,12 +75,23 @@ def render():
     
     heatmap_pivot = heatmap_data.pivot(index='GPU', columns='País', values='gCO2eq_per_TFLOP')
 
+    heatmap_pivot = heatmap_data.pivot(
+        index='GPU',
+        columns='País',
+        values='gCO2eq_per_TFLOP',
+    )
+
+    # Quita filas/columnas completamente vacías.
+    # No rellenamos NaN con 0 porque eso significaría "costo cero", y no es cierto.
+    heatmap_pivot = heatmap_pivot.dropna(axis=0, how="all")
+    heatmap_pivot = heatmap_pivot.dropna(axis=1, how="all")
+
     fig_heatmap = px.imshow(
         heatmap_pivot,
         labels=dict(x="País/Zona", y="GPU", color="gCO₂eq/TFLOP-h"),
         color_continuous_scale="Greens",
         aspect='auto',
-        text_auto='.0f'
+        text_auto='.0f',
     )
     
     fig_heatmap.update_layout(
@@ -91,8 +102,20 @@ def render():
     )
     
     fig_heatmap = apply_control_tower_plotly_theme(fig_heatmap)
-    
+
+    # Evita que Plotly muestre "undefined" cuando la figura no tiene título interno.
+    # El título visible ya lo estamos poniendo con st.subheader().
+    fig_heatmap.update_layout(
+        title_text="",
+        margin=dict(l=70, r=30, t=40, b=105),
+    )
+
     st.plotly_chart(fig_heatmap, width='stretch')
+
+    st.caption(
+        "Las celdas en blanco indican combinaciones GPU × país/zona sin datos disponibles "
+        "en la capa Gold; no representan valor cero."
+    )
     
     st.markdown("---")
     
@@ -112,22 +135,37 @@ def render():
         
         bar_data = heatmap_data[heatmap_data['País'] == pais_seleccionado].sort_values('gCO2eq_per_TFLOP')
         
-        fig_bar = px.bar(
-            bar_data,
-            x='GPU',
-            y='gCO2eq_per_TFLOP',
-            color='GPU',
-            title=f"Costo de Carbono por TFLOP en {pais_seleccionado}",
-            color_discrete_sequence=px.colors.qualitative.Bold
-        )
-        fig_bar.update_layout(
-            height=350,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color="#f2f2f2")
-        )
-        fig_bar = apply_control_tower_plotly_theme(fig_bar)
-        st.plotly_chart(fig_bar, width='stretch')
+    fig_bar = px.bar(
+        bar_data,
+        x='GPU',
+        y='gCO2eq_per_TFLOP',
+        color='GPU',
+        title=f"Costo de Carbono por TFLOP en {pais_seleccionado}",
+        color_discrete_sequence=px.colors.qualitative.Bold,
+        hover_data={
+            "GPU": True,
+            "gCO2eq_per_TFLOP": ":.2f",
+        },
+    )
+    fig_bar.update_layout(
+        height=350,
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color="#f2f2f2"),
+    )
+    fig_bar = apply_control_tower_plotly_theme(fig_bar)
+
+    # La leyenda es redundante: la GPU ya aparece en el eje X y en el tooltip.
+    fig_bar.update_layout(
+        showlegend=False,
+        margin=dict(l=70, r=30, t=85, b=120),
+    )
+    fig_bar.update_xaxes(
+        tickangle=45,
+        tickfont=dict(size=10),
+    )
+
+    st.plotly_chart(fig_bar, width='stretch')
     
     with col_slope:
         st.subheader("📈 Slope Chart: Una Misma GPU entre Países")

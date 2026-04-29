@@ -8,3 +8,4 @@ plotly>=5.18.0
 numpy>=1.24.0
 matplotlib>=3.10.9
 scipy>=1.17.1
+deltalake>=0.20.0
