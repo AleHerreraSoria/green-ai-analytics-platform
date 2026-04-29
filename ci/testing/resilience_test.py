@@ -42,7 +42,9 @@ from typing import Callable
 # ── dotenv ─────────────────────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
-    _env_path = os.path.join(os.path.dirname(__file__), "spark", ".env")
+    # __file__ está en ci/testing/ → subir 2 niveles para llegar a la raíz del proyecto
+    _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    _env_path = os.path.join(_project_root, "spark", ".env")
     if os.path.exists(_env_path):
         load_dotenv(_env_path)
         print(f"[resilience_test] .env cargado desde: {_env_path}")
@@ -202,28 +204,47 @@ def _check_no_temp_files(s3_client, bucket: str, prefix: str) -> list[str]:
 # ETL runners
 # =============================================================================
 
-def _run_bronze_to_silver() -> None:
-    """Ejecuta únicamente el job Bronze→Silver."""
+def _run_bronze_to_silver(spark) -> None:
+    """
+    Ejecuta únicamente el job Bronze→Silver inyectando la sesión activa.
+
+    Al pasar ``spark`` explícitamente, el job detecta que NO es el dueño
+    del ciclo de vida de la sesión (_owns_spark=False) y omite spark.stop()
+    al terminar. Sin esta inyección, el job destruye la sesión del test
+    y los escenarios subsiguientes fallan con
+    IllegalStateException / 'NoneType' object has no attribute 'sc'.
+    """
     import importlib.util
-    jobs_etl = os.path.join(os.path.dirname(__file__), "spark", "jobs", "etl")
+    # __file__ está en ci/testing/ → subir 2 niveles para llegar a la raíz
+    jobs_etl = os.path.join(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+        "spark", "jobs", "etl",
+    )
     spec = importlib.util.spec_from_file_location(
         "bronze_to_silver", os.path.join(jobs_etl, "bronze_to_silver.py")
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    mod.main()
+    mod.main(spark=spark)   # ← inyectar sesión; el job NO llamará spark.stop()
 
 
-def _run_silver_to_gold() -> None:
-    """Ejecuta únicamente el job Silver→Gold."""
+def _run_silver_to_gold(spark) -> None:
+    """
+    Ejecuta únicamente el job Silver→Gold inyectando la sesión activa.
+    Ver _run_bronze_to_silver() para la justificación del parámetro spark.
+    """
     import importlib.util
-    jobs_etl = os.path.join(os.path.dirname(__file__), "spark", "jobs", "etl")
+    # __file__ está en ci/testing/ → subir 2 niveles para llegar a la raíz
+    jobs_etl = os.path.join(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+        "spark", "jobs", "etl",
+    )
     spec = importlib.util.spec_from_file_location(
         "silver_to_gold", os.path.join(jobs_etl, "silver_to_gold.py")
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    mod.main()
+    mod.main(spark=spark)   # ← inyectar sesión; el job NO llamará spark.stop()
 
 
 # =============================================================================
@@ -329,7 +350,7 @@ def _scenario_schema_poison(spark, s3, result: ResilienceResult) -> None:
     # Retry: ejecutar el ETL real para restaurar/confirmar la tabla
     result.notes.append("Ejecutando retry del ETL Bronze→Silver...")
     try:
-        _run_bronze_to_silver()
+        _run_bronze_to_silver(spark)
         result.notes.append("ETL Bronze→Silver completado exitosamente en retry.")
     except Exception as exc:
         result.error_during_retry = str(exc)
@@ -424,7 +445,7 @@ def _scenario_null_pk(spark, s3, result: ResilienceResult) -> None:
     # Retry
     result.notes.append("Ejecutando retry del ETL Bronze→Silver...")
     try:
-        _run_bronze_to_silver()
+        _run_bronze_to_silver(spark)
         result.notes.append("ETL Bronze→Silver completado exitosamente.")
     except Exception as exc:
         result.error_during_retry = str(exc)
@@ -462,7 +483,7 @@ def _scenario_partial_write(spark, s3, result: ResilienceResult) -> None:
     # Retry: el ETL debe completar y la tabla Delta seguir siendo coherente
     result.notes.append("Ejecutando retry del ETL Bronze→Silver...")
     try:
-        _run_bronze_to_silver()
+        _run_bronze_to_silver(spark)
         result.notes.append("ETL Bronze→Silver completado exitosamente.")
     except Exception as exc:
         result.error_during_retry = str(exc)

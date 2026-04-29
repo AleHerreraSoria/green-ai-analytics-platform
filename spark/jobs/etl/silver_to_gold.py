@@ -73,50 +73,56 @@ GOLD: str   = f"s3a://{GOLD_BUCKET}"
 # =============================================================================
 # Inicialización de SparkSession
 # CRÍTICO: partitionOverwriteMode=dynamic garantiza idempotencia estricta.
-# Las reescrituras parciales no borran particiones ajenas al lote actual.
+# La sesión se construye dentro de build_spark() y NO en el cuerpo del módulo,
+# para permitir inyección externa desde tests u orquestadores (Airflow, etc.).
 # =============================================================================
 
-spark: SparkSession = (
-    SparkSession.builder
-    .appName("green-ai-silver-to-gold")
-    # ── Idempotencia estricta (CRÍTICO) ───────────────────────────────────────
-    .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
-    # ── Zona horaria canónica ─────────────────────────────────────────────────
-    .config("spark.sql.session.timeZone", "UTC")
-    # ── Delta Lake ────────────────────────────────────────────────────────────
-    .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-    .config(
-        "spark.sql.catalog.spark_catalog",
-        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+def build_spark() -> SparkSession:
+    """
+    Construye y retorna la SparkSession del pipeline Silver → Gold.
+    Usa getOrCreate() para reutilizar la sesión activa si existe.
+    """
+    spark = (
+        SparkSession.builder
+        .appName("green-ai-silver-to-gold")
+        # ── Idempotencia estricta (CRÍTICO) ───────────────────────────────────────
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        # ── Zona horaria canónica ─────────────────────────────────────────────────
+        .config("spark.sql.session.timeZone", "UTC")
+        # ── Delta Lake ────────────────────────────────────────────────────────────
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
+        # ── JARs: Delta + Hadoop-AWS + SDK ────────────────────────────────────────
+        .config(
+            "spark.jars.packages",
+            "io.delta:delta-spark_2.12:3.2.0,"
+            "org.apache.hadoop:hadoop-aws:3.3.4,"
+            "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+            "software.amazon.awssdk:bundle:2.20.18",
+        )
+        .config(
+            "spark.hadoop.fs.s3a.aws.credentials.provider",
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        )
+        # ── Fix Hadoop 3.3.4 «60s» NumberFormatException ─────────────────────────
+        .config("spark.hadoop.fs.s3a.connection.timeout",           "60000")
+        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.threads.keepalivetime",        "60")
+        .config("spark.hadoop.fs.s3a.multipart.purge",              "false")
+        .config("spark.hadoop.fs.s3a.multipart.purge.age",          "86400")
+        # ── Optimizaciones de escritura S3 ────────────────────────────────────────
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.hadoop.fs.s3a.fast.upload", "true")
+        # ── Memoria del driver ────────────────────────────────────────────────────
+        .config("spark.driver.memory", "8g")
+        .getOrCreate()
     )
-    # ── JARs: Delta + Hadoop-AWS + SDK ────────────────────────────────────────
-    .config(
-        "spark.jars.packages",
-        "io.delta:delta-spark_2.12:3.2.0,"
-        "org.apache.hadoop:hadoop-aws:3.3.4,"
-        "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
-        "software.amazon.awssdk:bundle:2.20.18",
-    )
-    .config(
-        "spark.hadoop.fs.s3a.aws.credentials.provider",
-        "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
-    )
-    # ── Fix Hadoop 3.3.4 «60s» NumberFormatException ─────────────────────────
-    .config("spark.hadoop.fs.s3a.connection.timeout",           "60000")
-    .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
-    .config("spark.hadoop.fs.s3a.threads.keepalivetime",        "60")
-    .config("spark.hadoop.fs.s3a.multipart.purge",              "false")
-    .config("spark.hadoop.fs.s3a.multipart.purge.age",          "86400")
-    # ── Optimizaciones de escritura S3 ────────────────────────────────────────
-    .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
-    .config("spark.hadoop.fs.s3a.fast.upload", "true")
-    # ── Memoria del driver ────────────────────────────────────────────────────
-    .config("spark.driver.memory", "8g")
-    .getOrCreate()
-)
-
-spark.sparkContext.setLogLevel("WARN")
-logger.info("SparkSession iniciada. partitionOverwriteMode=dynamic ✓")
+    spark.sparkContext.setLogLevel("WARN")
+    logger.info("SparkSession lista. partitionOverwriteMode=dynamic ✓")
+    return spark
 
 # =============================================================================
 # HELPER CENTRAL DE ESCRITURA GOLD — MERGE idempotente
@@ -127,6 +133,7 @@ def _merge_gold(
     path: str,
     merge_keys: list[str],
     partition_by: list[str] | None = None,
+    spark: SparkSession | None = None,
 ) -> None:
     """
     Escritura idempotente sobre una tabla Gold Delta usando MERGE nativo
@@ -162,6 +169,10 @@ def _merge_gold(
                   Si es None o vacía, no se aplica pruning (dimensiones sin
                   partición funcionan correctamente sin cambio de firma).
     """
+    if spark is None:
+        from pyspark.sql import SparkSession as _SparkSession
+        spark = _SparkSession.getActiveSession() or _SparkSession.builder.getOrCreate()
+
     if not DeltaTable.isDeltaTable(spark, path):
         # ── Bootstrap: primera escritura de la tabla ─────────────────────────
         logger.info("[MERGE-GOLD] Bootstrap (tabla nueva): %s", path)
@@ -240,7 +251,7 @@ def _merge_gold(
 # =============================================================================
 
 
-def build_dim_country() -> DataFrame:
+def build_dim_country(spark: SparkSession) -> DataFrame:
     """
     Dimensión de país.
 
@@ -291,7 +302,7 @@ def build_dim_country() -> DataFrame:
         )
 
         # ── 4. Escribir en Gold con MERGE idempotente ON country_id ──────────
-        _merge_gold(dim, f"{GOLD}/dim_country", merge_keys=["country_id"])
+        _merge_gold(dim, f"{GOLD}/dim_country", merge_keys=["country_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_country] OK — %d filas escritas en Gold.", row_count)
@@ -302,7 +313,7 @@ def build_dim_country() -> DataFrame:
         raise
 
 
-def build_dim_region() -> DataFrame:
+def build_dim_region(spark: SparkSession) -> DataFrame:
     """
     Dimensión puente de región cloud.
 
@@ -362,7 +373,7 @@ def build_dim_region() -> DataFrame:
         )
 
         # ── 4. Escribir en Gold con MERGE idempotente ON region_id ───────────
-        _merge_gold(dim, f"{GOLD}/dim_region", merge_keys=["region_id"])
+        _merge_gold(dim, f"{GOLD}/dim_region", merge_keys=["region_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_region] OK — %d filas escritas en Gold.", row_count)
@@ -373,7 +384,7 @@ def build_dim_region() -> DataFrame:
         raise
 
 
-def build_dim_gpu_model() -> DataFrame:
+def build_dim_gpu_model(spark: SparkSession) -> DataFrame:
     """
     Dimensión catálogo de GPUs (MLCO2).
 
@@ -432,7 +443,7 @@ def build_dim_gpu_model() -> DataFrame:
         )
 
         # ── 5. Escribir en Gold con MERGE idempotente ON gpu_id ──────────────
-        _merge_gold(dim, f"{GOLD}/dim_gpu_model", merge_keys=["gpu_id"])
+        _merge_gold(dim, f"{GOLD}/dim_gpu_model", merge_keys=["gpu_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_gpu_model] OK — %d filas escritas en Gold.", row_count)
@@ -443,7 +454,7 @@ def build_dim_gpu_model() -> DataFrame:
         raise
 
 
-def build_dim_instance_type() -> DataFrame:
+def build_dim_instance_type(spark: SparkSession) -> DataFrame:
     """
     Dimensión de tipos de instancia EC2 (proxy TCO de cómputo).
 
@@ -494,7 +505,7 @@ def build_dim_instance_type() -> DataFrame:
         )
 
         # ── 4. Escribir en Gold con MERGE idempotente ON instance_type_id ────
-        _merge_gold(dim, f"{GOLD}/dim_instance_type", merge_keys=["instance_type_id"])
+        _merge_gold(dim, f"{GOLD}/dim_instance_type", merge_keys=["instance_type_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_instance_type] OK — %d filas escritas en Gold.", row_count)
@@ -505,7 +516,7 @@ def build_dim_instance_type() -> DataFrame:
         raise
 
 
-def build_dim_electricity_price() -> DataFrame:
+def build_dim_electricity_price(spark: SparkSession) -> DataFrame:
     """
     Dimensión de precio eléctrico residencial estático por país.
 
@@ -552,7 +563,7 @@ def build_dim_electricity_price() -> DataFrame:
         )
 
         # ── 3. Escribir en Gold con MERGE idempotente ON price_id ────────────
-        _merge_gold(dim, f"{GOLD}/dim_electricity_price", merge_keys=["price_id"])
+        _merge_gold(dim, f"{GOLD}/dim_electricity_price", merge_keys=["price_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_electricity_price] OK — %d filas escritas en Gold.", row_count)
@@ -578,7 +589,7 @@ def build_dim_electricity_price() -> DataFrame:
 # =============================================================================
 
 
-def build_fact_ai_compute_usage() -> DataFrame:
+def build_fact_ai_compute_usage(spark: SparkSession) -> DataFrame:
     """
     Tabla de hechos principal de sesiones de cómputo de IA.
 
@@ -776,6 +787,7 @@ def build_fact_ai_compute_usage() -> DataFrame:
             f"{GOLD}/fact_ai_compute_usage",
             merge_keys=["session_id"],
             partition_by=["year", "month"],
+            spark=spark,
         )
 
         row_count: int = fact.count()
@@ -787,7 +799,7 @@ def build_fact_ai_compute_usage() -> DataFrame:
         raise
 
 
-def build_fact_carbon_intensity_hourly() -> DataFrame:
+def build_fact_carbon_intensity_hourly(spark: SparkSession) -> DataFrame:
     """
     Tabla de hechos de intensidad de carbono horaria y mix eléctrico.
 
@@ -884,6 +896,7 @@ def build_fact_carbon_intensity_hourly() -> DataFrame:
             f"{GOLD}/fact_carbon_intensity_hourly",
             merge_keys=["zone", "event_ts"],
             partition_by=["year", "month"],
+            spark=spark,
         )
 
         row_count: int = fact.count()
@@ -897,7 +910,7 @@ def build_fact_carbon_intensity_hourly() -> DataFrame:
         raise
 
 
-def build_fact_country_energy_annual() -> DataFrame:
+def build_fact_country_energy_annual(spark: SparkSession) -> DataFrame:
     """
     Tabla de hechos de indicadores macroenergéticos y económicos anuales por país.
 
@@ -1001,6 +1014,7 @@ def build_fact_country_energy_annual() -> DataFrame:
             f"{GOLD}/fact_country_energy_annual",
             merge_keys=["iso_alpha3", "year"],
             partition_by=["year"],
+            spark=spark,
         )
 
         row_count: int = fact.count()
@@ -1018,9 +1032,18 @@ def build_fact_country_energy_annual() -> DataFrame:
 # ORQUESTACIÓN PRINCIPAL
 # =============================================================================
 
-def main() -> None:
+def main(spark: SparkSession | None = None) -> None:
     """
     Pipeline Gold completo: Dimensiones → Hechos.
+
+    Parámetros
+    ----------
+    spark : SparkSession | None
+        Sesión Spark a reutilizar. Si es None, la función crea una sesión
+        propia y la cierra al terminar (modo standalone).
+        Si se inyecta externamente (ej.: desde un test de idempotencia o un
+        orquestador como Airflow), la sesión NO se destruye al finalizar —
+        el ciclo de vida queda en manos del llamador.
 
     Orden de ejecución:
       1. Dimensiones (sin dependencias entre sí → pueden paralelizarse en Airflow).
@@ -1031,71 +1054,79 @@ def main() -> None:
       - Si un hecho falla de forma aislada, los demás hechos continúan.
       - Al final se reporta el estado global y se sale con código 1 si hay errores.
     """
+    _owns_spark = spark is None
+    if _owns_spark:
+        spark = build_spark()
+
     logger.info("=" * 70)
     logger.info("  Green AI — Silver → Gold  |  Pipeline Dimensional Kimball")
     logger.info("=" * 70)
 
-    # ── Paso 1: Dimensiones ───────────────────────────────────────────────────
-    logger.info("--- PASO 1/2: Construcción de Dimensiones ---")
-    dim_pipeline = [
-        build_dim_country,
-        build_dim_region,
-        build_dim_gpu_model,
-        build_dim_instance_type,
-        build_dim_electricity_price,
-    ]
+    try:
+        # ── Paso 1: Dimensiones ───────────────────────────────────────────────────
+        logger.info("--- PASO 1/2: Construcción de Dimensiones ---")
+        dim_pipeline = [
+            build_dim_country,
+            build_dim_region,
+            build_dim_gpu_model,
+            build_dim_instance_type,
+            build_dim_electricity_price,
+        ]
 
-    dim_errors: list[str] = []
-    for fn in dim_pipeline:
-        try:
-            fn()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Dimensión fallida [%s]: %s", fn.__name__, exc)
-            dim_errors.append(fn.__name__)
+        dim_errors: list[str] = []
+        for fn in dim_pipeline:
+            try:
+                fn(spark)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Dimensión fallida [%s]: %s", fn.__name__, exc)
+                dim_errors.append(fn.__name__)
 
-    if dim_errors:
-        logger.error(
-            "❌ %d dimensión(es) fallaron: %s. Abortando pipeline de hechos.",
-            len(dim_errors),
-            ", ".join(dim_errors),
-        )
-        spark.stop()
-        sys.exit(1)
+        if dim_errors:
+            logger.error(
+                "❌ %d dimensión(es) fallaron: %s. Abortando pipeline de hechos.",
+                len(dim_errors),
+                ", ".join(dim_errors),
+            )
+            if _owns_spark:
+                spark.stop()
+            sys.exit(1)
 
-    logger.info("✅ Todas las dimensiones construidas correctamente.")
+        logger.info("✅ Todas las dimensiones construidas correctamente.")
 
-    # ── Paso 2: Hechos ────────────────────────────────────────────────────────
-    logger.info("--- PASO 2/2: Construcción de Tablas de Hechos ---")
-    fact_pipeline = [
-        build_fact_ai_compute_usage,
-        build_fact_carbon_intensity_hourly,
-        build_fact_country_energy_annual,
-    ]
+        # ── Paso 2: Hechos ────────────────────────────────────────────────────────
+        logger.info("--- PASO 2/2: Construcción de Tablas de Hechos ---")
+        fact_pipeline = [
+            build_fact_ai_compute_usage,
+            build_fact_carbon_intensity_hourly,
+            build_fact_country_energy_annual,
+        ]
 
-    fact_errors: list[str] = []
-    for fn in fact_pipeline:
-        try:
-            fn()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Hecho fallido [%s]: %s", fn.__name__, exc)
-            fact_errors.append(fn.__name__)
+        fact_errors: list[str] = []
+        for fn in fact_pipeline:
+            try:
+                fn(spark)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Hecho fallido [%s]: %s", fn.__name__, exc)
+                fact_errors.append(fn.__name__)
 
-    # ── Resumen final ─────────────────────────────────────────────────────────
-    logger.info("=" * 70)
-    if not fact_errors:
-        logger.info("✅ Pipeline Gold completado exitosamente. Todas las tablas escritas.")
-    else:
-        logger.error(
-            "❌ %d tabla(s) de hechos fallaron: %s",
-            len(fact_errors),
-            ", ".join(fact_errors),
-        )
+        # ── Resumen final ─────────────────────────────────────────────────────────
+        logger.info("=" * 70)
+        if not fact_errors:
+            logger.info("✅ Pipeline Gold completado exitosamente. Todas las tablas escritas.")
+        else:
+            logger.error(
+                "❌ %d tabla(s) de hechos fallaron: %s",
+                len(fact_errors),
+                ", ".join(fact_errors),
+            )
 
-    spark.stop()
-    logger.info("SparkSession cerrada.")
+        if fact_errors:
+            sys.exit(1)
 
-    if fact_errors:
-        sys.exit(1)
+    finally:
+        if _owns_spark:
+            spark.stop()
+            logger.info("SparkSession cerrada (standalone mode).")
 
 
 # =============================================================================

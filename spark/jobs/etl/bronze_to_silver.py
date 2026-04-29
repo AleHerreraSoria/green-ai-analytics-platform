@@ -285,10 +285,72 @@ def process_carbon_intensity_history(spark: SparkSession) -> tuple[DataFrame, in
     )
     df = _log_dropped(df_raw_exp, df_clean, "carbon_intensity/history")
 
+    # ── DEDUPLICACIÓN: ventanas temporales solapadas ──────────────────────────
+    #
+    # Raíz del problema:
+    #   El API de Electricity Maps entrega el endpoint /history con snapshots
+    #   horarios que se actualizan cuando las estimaciones preliminares son
+    #   corregidas con datos reales. Snapshots consecutivos comparten el mismo
+    #   (zone, datetime) pero difieren en updatedAt y carbon_intensity.
+    #   Cuando los archivos Bronze acumulan múltiples snapshots del mismo rango
+    #   horario, el DataFrame explodado contiene duplicados por la merge-key
+    #   (zone, datetime), lo que viola el requisito de unicidad de Delta MERGE.
+    #
+    # Estrategia: Window + row_number() en una sola pasada
+    #   1. Se define una ventana particionada por (zone, datetime) — la merge-key.
+    #   2. Dentro de cada ventana, los registros se ordenan por:
+    #        a) updated_at DESC NULLS LAST  → el valor real más reciente primero.
+    #        b) F.cast(emission_factor_type, "string") ASC  → tiebreaker
+    #           determinista en texto: garantiza el mismo resultado en cada
+    #           ejecución aunque updated_at sea idéntico entre dos filas.
+    #   3. Solo se retiene la fila con row_number() == 1 (el "ganador") por clave.
+    #
+    # Por qué Window + row_number() y no groupBy + max():
+    #   - groupBy + max(updated_at) requeriría un segundo join para recuperar
+    #     las columnas restantes (carbon_intensity, emission_factor_type, etc.),
+    #     lo que dobla el shuffle y consume el doble de memoria.
+    #   - Window + row_number() resuelve todo en UNA pasada de shuffle, escalando
+    #     linealmente con el volumen de datos.
+    #   - El particionado previo por (zone, datetime) alinea la ventana con la
+    #     distribución natural del dato, minimizando el movimiento entre nodos.
+    #
+    # Impacto en performance:
+    #   - Un único stage de shuffle adicional, acotado a las particiones (year, month)
+    #     ya presentes en el DataFrame.
+    #   - Sin colecciones a driver (no hay .collect()); todo se ejecuta en el plan
+    #     distribuido de Spark.
+    #   - El filtro row_number() == 1 elimina duplicados sin materializar el
+    #     DataFrame completo en memoria del driver.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    from pyspark.sql.window import Window
+
+    _dedup_window = (
+        Window
+        .partitionBy("zone", "datetime")        # merge-key: granularidad mínima
+        .orderBy(
+            F.col("updated_at").desc_nulls_last(),  # dato real > estimación
+            F.col("emission_factor_type").cast("string").asc_nulls_last(),  # tiebreaker determinista
+        )
+    )
+
+    df = (
+        df
+        .withColumn("_dedup_rank", F.row_number().over(_dedup_window))
+        .filter(F.col("_dedup_rank") == 1)
+        .drop("_dedup_rank")
+    )
+
+    logger.info(
+        "[QA:carbon_intensity/history] Deduplicación por (zone, datetime) aplicada "
+        "(criterio: max updated_at DESC NULLS LAST + emission_factor_type tiebreaker)."
+    )
+
     dataset_key = "electricity_maps/carbon_intensity/history"
     result: WriteResult = write_to_silver(df, dataset_key, spark=spark)
     _require_materialized_write(result, dataset_key)
     return df, result.rows_written
+
 
 
 # ---------------------------------------------------------------------------
@@ -774,8 +836,23 @@ def process_world_bank_metadata(spark: SparkSession) -> tuple[DataFrame, int]:
 # MAIN
 # ===========================================================================
 
-def main():
-    spark = build_spark()
+def main(spark: SparkSession | None = None) -> None:
+    """
+    Pipeline Bronze → Silver.
+
+    Parámetros
+    ----------
+    spark : SparkSession | None
+        Sesión Spark a reutilizar. Si es None, la función crea una sesión
+        propia y la cierra al terminar (modo standalone).
+        Si se inyecta externamente (ej.: desde un test de idempotencia o un
+        orquestador como Airflow), la sesión NO se destruye al finalizar —
+        el ciclo de vida queda en manos del llamador.
+    """
+    _owns_spark = spark is None
+    if _owns_spark:
+        spark = build_spark()
+
     results = {}
 
     try:
@@ -826,7 +903,9 @@ def main():
                 "Bronze->Silver finalizó con errores en datasets: " + ", ".join(error_steps)
             )
     finally:
-        spark.stop()
+        if _owns_spark:
+            spark.stop()
+            logger.info("SparkSession cerrada (standalone mode).")
 
 
 if __name__ == "__main__":

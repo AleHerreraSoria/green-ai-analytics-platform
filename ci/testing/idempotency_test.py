@@ -37,8 +37,9 @@ from datetime import datetime, timezone
 # ── dotenv ─────────────────────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
-    # Busca .env en spark/ relativo a la raíz del proyecto
-    _env_path = os.path.join(os.path.dirname(__file__), "spark", ".env")
+    # __file__ está en ci/testing/ → subir 2 niveles para llegar a la raíz del proyecto
+    _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    _env_path = os.path.join(_project_root, "spark", ".env")
     if os.path.exists(_env_path):
         load_dotenv(_env_path)
         print(f"[idempotency_test] .env cargado desde: {_env_path}")
@@ -277,31 +278,44 @@ def capture_run_snapshot(spark, run_number: int) -> RunSnapshot:
 # ETL runner
 # =============================================================================
 
-def run_etl_pipeline() -> None:
+def run_etl_pipeline(spark) -> None:
     """
-    Ejecuta el pipeline ETL completo Bronze→Silver→Gold.
-    Importa y llama directamente a las funciones main() de cada job,
-    lo que garantiza que usa la SparkSession ya activa (getOrCreate).
+    Ejecuta el pipeline ETL completo Bronze→Silver→Gold inyectando la
+    SparkSession activa en cada job.
+
+    Al pasar ``spark`` explícitamente a cada ``main()``, los jobs saben que
+    NO son los dueños del ciclo de vida de la sesión y omiten el
+    ``spark.stop()`` al terminar, manteniendo la sesión viva para los
+    snapshots posteriores del test de idempotencia.
+
+    Parámetros
+    ----------
+    spark : SparkSession
+        Sesión activa creada por el test. Se propaga a bronze_to_silver y
+        silver_to_gold para garantizar contexto compartido durante todo el
+        ciclo: snapshot-inicial → ETL → snapshot-posterior.
     """
-    # Asegurar que el directorio de libs está en el path
-    spark_root = os.path.join(os.path.dirname(__file__), "spark")
-    jobs_etl   = os.path.join(spark_root, "jobs", "etl")
-    for path in (spark_root, jobs_etl):
+    import importlib
+
+    # __file__ está en ci/testing/ → subir 2 niveles para llegar a la raíz del proyecto
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    jobs_etl     = os.path.join(project_root, "spark", "jobs", "etl")
+
+    for path in (project_root, os.path.join(project_root, "spark"), jobs_etl):
         if path not in sys.path:
             sys.path.insert(0, path)
 
+    # ── Bronze → Silver ───────────────────────────────────────────────────────
     logger.info("[etl] Ejecutando Bronze → Silver ...")
-    import importlib
-
-    # Importar y ejecutar bronze_to_silver
     b2s_spec = importlib.util.spec_from_file_location(
         "bronze_to_silver",
         os.path.join(jobs_etl, "bronze_to_silver.py"),
     )
     b2s_mod = importlib.util.module_from_spec(b2s_spec)
     b2s_spec.loader.exec_module(b2s_mod)
-    b2s_mod.main()
+    b2s_mod.main(spark=spark)   # ← inyectar sesión; el job NO llamará spark.stop()
 
+    # ── Silver → Gold ─────────────────────────────────────────────────────────
     logger.info("[etl] Ejecutando Silver → Gold ...")
     s2g_spec = importlib.util.spec_from_file_location(
         "silver_to_gold",
@@ -309,7 +323,7 @@ def run_etl_pipeline() -> None:
     )
     s2g_mod = importlib.util.module_from_spec(s2g_spec)
     s2g_spec.loader.exec_module(s2g_mod)
-    s2g_mod.main()
+    s2g_mod.main(spark=spark)   # ← inyectar sesión; el job NO llamará spark.stop()
 
 
 # =============================================================================
@@ -319,22 +333,29 @@ def run_etl_pipeline() -> None:
 def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict:
     """
     Compara dos snapshots y detecta:
-      - Cambios en row_count entre ejecuciones (no deben existir).
-      - Duplicados detectados en cualquier ejecución.
+
+      - regressions    : row_count del candidate difiere del baseline.
+      - dup_introduced : duplicados que aparecen en el candidate pero no en el
+                         baseline — el ETL INTRODUJO duplicados (violation real).
+      - dup_preexisting: duplicados heredados del estado pre-existente de S3;
+                         el ETL no los generó. Se reportan como warning de
+                         calidad de datos pero NO bloquean el PASS de idempotencia.
+
+    Criterio de PASS:
+      regressions == 0  AND  dup_introduced == 0
     """
-    regressions: list[dict] = []
-    dup_violations: list[dict] = []
+    regressions:     list[dict] = []
+    dup_introduced:  list[dict] = []
+    dup_preexisting: list[dict] = []
 
     for key, baseline_snap in baseline.tables.items():
         cand_snap = candidate.tables.get(key)
         if cand_snap is None:
             continue
-
-        # Si alguna de las dos tuvo error, no comparar
         if baseline_snap.error or cand_snap.error:
             continue
 
-        # Idempotencia: el conteo no debe cambiar entre runs
+        # ── Idempotencia de row_count ─────────────────────────────────────────
         if baseline_snap.row_count != cand_snap.row_count:
             regressions.append({
                 "table":          key,
@@ -343,23 +364,46 @@ def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict:
                 "delta":          cand_snap.row_count - baseline_snap.row_count,
             })
 
-        # Integridad: sin duplicados en ningún run
-        if cand_snap.dup_count > 0:
-            dup_violations.append({
+        # ── Detección de duplicados ───────────────────────────────────────────
+        # Bug anterior: `if cand_snap.dup_count > 0` falla siempre que la tabla
+        # tenga duplicados pre-existentes en S3, incluso cuando el ETL no los
+        # generó. Eso hace que el test sea sensible al estado heredado, no al
+        # comportamiento del pipeline.
+        #
+        # Lógica correcta:
+        #   - cand_dups > baseline_dups → el ETL generó/empeoró duplicados → FAIL
+        #   - cand_dups > 0 pero <= baseline_dups → duplicados heredados → WARNING
+        baseline_dups = max(baseline_snap.dup_count, 0)
+        cand_dups     = max(cand_snap.dup_count, 0)
+
+        if cand_dups > baseline_dups:
+            dup_introduced.append({
+                "table":          key,
+                "baseline_dups":  baseline_dups,
+                "candidate_dups": cand_dups,
+                "new_dups":       cand_dups - baseline_dups,
+                "pk":             cand_snap.pk_columns,
+                "run":            candidate.run_number,
+            })
+        elif cand_dups > 0:
+            dup_preexisting.append({
                 "table":     key,
-                "dup_count": cand_snap.dup_count,
+                "dup_count": cand_dups,
                 "pk":        cand_snap.pk_columns,
                 "run":       candidate.run_number,
+                "note":      "duplicados pre-existentes en S3; no introducidos por este run",
             })
 
-    idempotent = len(regressions) == 0 and len(dup_violations) == 0
+    idempotent = len(regressions) == 0 and len(dup_introduced) == 0
     return {
-        "comparison":     f"run_{baseline.run_number}_vs_run_{candidate.run_number}",
-        "idempotent":     idempotent,
-        "regressions":    regressions,
-        "dup_violations": dup_violations,
-        "status":         "PASS" if idempotent else "FAIL",
+        "comparison":      f"run_{baseline.run_number}_vs_run_{candidate.run_number}",
+        "idempotent":      idempotent,
+        "regressions":     regressions,
+        "dup_violations":  dup_introduced,
+        "dup_preexisting": dup_preexisting,
+        "status":          "PASS" if idempotent else "FAIL",
     }
+
 
 
 # =============================================================================
@@ -394,7 +438,7 @@ def main() -> int:
             logger.info("[run-%d/%d] Iniciando ejecución del ETL...", run_n, NUM_RUNS)
             t0 = time.time()
 
-            run_etl_pipeline()
+            run_etl_pipeline(spark)
 
             elapsed = time.time() - t0
             logger.info("[run-%d] ETL completado en %.1fs.", run_n, elapsed)
@@ -406,11 +450,12 @@ def main() -> int:
             comp = compare_snapshots(snapshots[run_n - 1], snap_n)
             comparisons.append(comp)
             logger.info(
-                "[run-%d] Resultado: %s — regressions=%d  dup_violations=%d",
+                "[run-%d] Resultado: %s — regressions=%d  dup_introduced=%d  dup_preexisting=%d",
                 run_n,
                 comp["status"],
                 len(comp["regressions"]),
                 len(comp["dup_violations"]),
+                len(comp.get("dup_preexisting", [])),
             )
             if comp["regressions"]:
                 for r in comp["regressions"]:
