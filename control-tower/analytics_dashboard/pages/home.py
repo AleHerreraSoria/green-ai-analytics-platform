@@ -11,7 +11,6 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from gold_analytics import (
-    data_source_caption,
     load_gold_bundle,
     normalize_usage,
     page4_macro_scatter,
@@ -57,7 +56,8 @@ def render():
         df_carbon = get_demo_carbon_data()
         df_country = get_demo_country_data()
 
-    data_source_caption(from_gold, "KPIs y gráficos inferidos desde Parquet Gold cuando hay columnas esperadas.")
+    # Quitado: leyenda de fuente en portada
+    # data_source_caption(from_gold, "KPIs y gráficos inferidos desde Parquet Gold cuando hay columnas esperadas.")
 
     col1, col2, col3, col4 = st.columns(4)
 

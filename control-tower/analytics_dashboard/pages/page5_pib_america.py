@@ -45,8 +45,16 @@ def render():
                           'Sudamérica', 'Sudamérica', 'Caribe', 'Centroamérica', 'Centroamérica']
         })
     else:
-        america_data['PIB_per_capita'] = america_data['Exportaciones_TIC_MM']
-    data_source_caption(ok_am, "Filtrado ISO América sobre join `dim_country` + intensidad por zona.")
+        america_data = america_data.copy()
+
+        if "PIB_per_capita" not in america_data.columns or america_data["PIB_per_capita"].isna().all():
+            if "gdp_per_capita_usd" in america_data.columns:
+                america_data["PIB_per_capita"] = america_data["gdp_per_capita_usd"]
+            elif "Exportaciones_TIC_MM" in america_data.columns:
+                america_data["PIB_per_capita"] = america_data["Exportaciones_TIC_MM"]
+
+        if "Subregión" not in america_data.columns and "Región" in america_data.columns:
+            america_data["Subregión"] = america_data["Región"]
     
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)

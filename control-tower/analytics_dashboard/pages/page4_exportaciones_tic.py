@@ -42,7 +42,23 @@ def render():
                        'Oceanía', 'Latinoamérica', 'Latinoamérica', 'Asia', 'Asia', 'Norteamérica']
         })
         note = ""
-    data_source_caption(ok_g, note or "dim_country + intensidad por zona (`dim_region` + `fact_carbon_intensity_hourly`).")
+    # Verificar que scatter_data tenga las columnas necesarias de Gold
+    has_valid_gold_data = (
+        ok_g and 
+        not scatter_data.empty and
+        'Exportaciones_TIC_MM' in scatter_data.columns and
+        'Intensidad_Carbono' in scatter_data.columns and
+        len(scatter_data) > 0
+    )
+    if has_valid_gold_data:
+        # Verificar que tenga datos válidos (no todo NaN)
+        valid_rows = scatter_data[
+            scatter_data['Exportaciones_TIC_MM'].notna() & 
+            scatter_data['Intensidad_Carbono'].notna()
+        ]
+        has_valid_gold_data = len(valid_rows) > 0
+    
+    data_source_caption(has_valid_gold_data, note or "dim_country + intensidad por zona (`dim_region` + `fact_carbon_intensity_hourly`).")
     
     # ==================== KPIs ====================
     col1, col2, col3 = st.columns(3)
