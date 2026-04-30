@@ -105,6 +105,9 @@ x Trade-offs explicados (ej: costo vs performance)
 ☐ decisiones técnicas
 ☐ Diagramas incluidos
 ☐ Pasos claros para correr el proyecto
+
+
+
 ☐ Proyecto reproducible de punta a punta
 
 
