@@ -43,6 +43,39 @@ def _resolve_dag_id() -> str:
     return raw or "green-ai-full-pipeline"
 
 
+def _connection_runtime_error(base_url: str, exc: BaseException | str, where: str) -> RuntimeError:
+    """Convierte fallos de red en un mensaje accionable (sobre todo desde Docker)."""
+    msg = str(exc)
+    low = msg.lower()
+    timeout_like = (
+        isinstance(exc, TimeoutError)
+        or "timed out" in low
+        or "timeout" in low
+    )
+    lines = [
+        f"No se pudo conectar con Airflow ({where}).",
+        f"URL configurada: {base_url}",
+        f"Error: {msg}",
+        "",
+        "Desde el contenedor, esa URL debe ser alcanzable (no es la misma red que tu navegador). "
+        "Si Airflow no está en el mismo docker-compose, evitá localhost apuntando al host: "
+        "usá IP/DNS interno de la VPC, el hostname del servicio, o host.docker.internal donde exista.",
+        "Revisá security groups, firewall y puerto.",
+    ]
+    if timeout_like:
+        lines.append("Si la red es lenta, probá subir AIRFLOW_API_TIMEOUT_SECONDS (p. ej. 120).")
+    if "login" in where.lower():
+        lines.append(
+            "Si el fallo es al abrir /login/ pero la API REST admite usuario/clave sin cookie web, "
+            "poné AIRFLOW_API_DISABLE_FAB_SESSION=1 en `.env` y reiniciá el contenedor (solo Basic contra la API)."
+        )
+    lines.append(
+        "Si tu API acepta token, podés usar AIRFLOW_API_TOKEN o AIRFLOW_API_AUTHORIZATION "
+        "y AIRFLOW_API_DISABLE_FAB_SESSION=1 para no pasar por el login web /login/."
+    )
+    return RuntimeError("\n".join(lines))
+
+
 def config_from_env() -> AirflowAPIConfig:
     auth_raw = os.getenv("AIRFLOW_API_AUTHORIZATION", "").strip() or None
     return AirflowAPIConfig(
@@ -77,34 +110,40 @@ class AirflowRESTClient:
         login_url = f"{self.base_url}/login/"
         jar = CookieJar()
         opener = build_opener(HTTPCookieProcessor(jar))
-        with opener.open(Request(login_url, headers={"Accept": "text/html"}), timeout=self.config.timeout_seconds) as get_resp:
-            html = get_resp.read().decode("utf-8", errors="replace")
-        m = re.search(r'id="csrf_token"[^>]+value="([^"]+)"', html) or re.search(
-            r'name="csrf_token"[^>]+value="([^"]+)"', html
-        )
-        if not m:
-            raise RuntimeError("No se encontró csrf_token en /login/ de Airflow.")
-        csrf = m.group(1)
-        body = urlencode(
-            {
-                "csrf_token": csrf,
-                "username": self.config.username or "",
-                "password": self.config.password or "",
-            }
-        ).encode("utf-8")
-        post_req = Request(
-            login_url,
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "text/html",
-                "Referer": login_url,
-            },
-        )
-        with opener.open(post_req, timeout=self.config.timeout_seconds) as post_resp:
-            post_resp.read()
-            final_url = post_resp.geturl()
+        try:
+            with opener.open(
+                Request(login_url, headers={"Accept": "text/html"}),
+                timeout=self.config.timeout_seconds,
+            ) as get_resp:
+                html = get_resp.read().decode("utf-8", errors="replace")
+            m = re.search(r'id="csrf_token"[^>]+value="([^"]+)"', html) or re.search(
+                r'name="csrf_token"[^>]+value="([^"]+)"', html
+            )
+            if not m:
+                raise RuntimeError("No se encontró csrf_token en /login/ de Airflow.")
+            csrf = m.group(1)
+            body = urlencode(
+                {
+                    "csrf_token": csrf,
+                    "username": self.config.username or "",
+                    "password": self.config.password or "",
+                }
+            ).encode("utf-8")
+            post_req = Request(
+                login_url,
+                data=body,
+                method="POST",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "text/html",
+                    "Referer": login_url,
+                },
+            )
+            with opener.open(post_req, timeout=self.config.timeout_seconds) as post_resp:
+                post_resp.read()
+                final_url = post_resp.geturl()
+        except (URLError, TimeoutError, OSError) as exc:
+            raise _connection_runtime_error(self.base_url, exc, "login web FAB (/login/)") from exc
         if "/login" in urlparse(final_url).path.lower():
             raise RuntimeError("Login FAB falló: usuario o contraseña incorrectos.")
         parts = [f"{c.name}={c.value}" for c in jar]
@@ -161,6 +200,17 @@ class AirflowRESTClient:
                     detail = f" Detalle: {raw[:800]}"
             except OSError:
                 pass
-            raise RuntimeError(f"Airflow API {exc.code} para {endpoint}.{detail}") from exc
+            hint = ""
+            if exc.code == 401:
+                hint = (
+                    "\n\n401 Unauthorized: usuario/clave incorrectos o modo de auth no aceptado por esta "
+                    "instancia. Verificá AIRFLOW_API_USERNAME y AIRFLOW_API_PASSWORD en `.env`, o definí "
+                    "AIRFLOW_API_TOKEN / AIRFLOW_API_AUTHORIZATION (JWT Bearer). "
+                    "El usuario debe existir en Airflow con permisos RBAC sobre el DAG/API. "
+                    "Si tenés AIRFLOW_API_DISABLE_FAB_SESSION=1, solo se usa Basic; si Airflow exige JWT o "
+                    "sesión web, quitá esa variable para intentar login FAB (cookie) o pasá un token."
+                )
+            raise RuntimeError(f"Airflow API {exc.code} para {endpoint}.{detail}{hint}") from exc
         except URLError as exc:
-            raise RuntimeError("No se pudo conectar con Airflow.") from exc
+            inner: BaseException | str = exc.reason if exc.reason is not None else exc
+            raise _connection_runtime_error(self.base_url, inner, f"API GET {endpoint}") from exc
