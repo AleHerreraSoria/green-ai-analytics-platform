@@ -21,14 +21,36 @@ import pandas as pd
 
 from ML.airflow_client import AirflowRESTClient, config_from_env
 
+# Compatibilidad entre versiones Airflow: algunas rechazan order_by=logical_date (400).
+_ORDER_CANDIDATES: tuple[str, ...] = ("-logical_date", "-execution_date", "-start_date")
+
+
+def _resolve_dag_runs_order_by(client: AirflowRESTClient, dag_id: str) -> str:
+    """Usa el mismo criterio que `utils/airflow_state_client` para listar dag runs."""
+    encoded = quote(dag_id, safe="")
+    for order_by in _ORDER_CANDIDATES:
+        path = f"/api/v1/dags/{encoded}/dagRuns?order_by={order_by}&limit=1"
+        try:
+            client.get_json(path)
+            return order_by
+        except RuntimeError as exc:
+            if "Airflow API 400" in str(exc):
+                continue
+            raise
+    raise RuntimeError(
+        "Ningún order_by es válido para listar dag runs en esta versión de Airflow. "
+        f"Valores probados: {_ORDER_CANDIDATES}."
+    )
+
 
 def _iter_dag_runs(client: AirflowRESTClient, dag_id: str, page_size: int):
     offset = 0
     encoded = quote(dag_id, safe="")
+    order_by = _resolve_dag_runs_order_by(client, dag_id)
     while True:
         path = (
             f"/api/v1/dags/{encoded}/dagRuns"
-            f"?limit={page_size}&offset={offset}&order_by=-logical_date"
+            f"?limit={page_size}&offset={offset}&order_by={order_by}"
         )
         payload = client.get_json(path)
         runs = payload.get("dag_runs", [])
@@ -69,8 +91,9 @@ def fetch_latest_run_dataframe(
 ) -> pd.DataFrame:
     """Último dag run con todas sus task instances (mismo esquema que export masivo)."""
     encoded = quote(dag_id, safe="")
+    order_by = _resolve_dag_runs_order_by(client, dag_id)
     payload = client.get_json(
-        f"/api/v1/dags/{encoded}/dagRuns?order_by=-logical_date&limit=1"
+        f"/api/v1/dags/{encoded}/dagRuns?order_by={order_by}&limit=1"
     )
     runs = payload.get("dag_runs", [])
     if not runs:
@@ -179,4 +202,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)

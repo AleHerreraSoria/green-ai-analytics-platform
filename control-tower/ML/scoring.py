@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 
 _CT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +19,13 @@ if str(_CT_ROOT) not in sys.path:
 from utils.project_env import ensure_dotenv_loaded
 
 from ML.airflow_client import AirflowRESTClient, config_from_env
+import ML.degenerate_classifier  # noqa: F401 — joblib puede cargar DegenerateFailureClassifier
 from ML.export_airflow_metadata import fetch_latest_run_dataframe
-from ML.features import FEATURE_COLUMNS, load_metrics, prepare_labeled_table
+from ML.features import (
+    enrich_for_model_inference,
+    load_metrics,
+    sanitize_features_for_predict,
+)
 from ML.ml_package import ml_package_dir, path_from_env
 
 
@@ -31,6 +37,8 @@ def score_latest_run_dataframe(
 ) -> tuple[pd.DataFrame | None, str | None]:
     """
     Devuelve (tabla ordenada por p_fail, None) o (None, mensaje de error).
+    P(fallo) se calcula para **todas** las tareas del último run, imputando features
+    si hace falta (misma base que entrenamiento).
     """
     ensure_dotenv_loaded()
     base = ml_package_dir()
@@ -65,37 +73,57 @@ def score_latest_run_dataframe(
     hist = pd.read_parquet(history_parquet)
     latest_id = str(latest.iloc[0]["dag_run_id"])
     combined = pd.concat([hist, latest], ignore_index=True)
+    combined["dag_run_id"] = combined["dag_run_id"].astype(str)
     combined = combined.drop_duplicates(
         subset=["dag_run_id", "task_id", "try_number"], keep="last"
     )
 
-    prepared = prepare_labeled_table(combined)
-    rows = prepared[prepared["dag_run_id"] == latest_id]
-    if rows.empty:
-        return (
-            None,
-            "El último run no tiene tareas terminales con duración todavía "
-            "(sigue en ejecución o sin datos).",
-        )
+    enriched = enrich_for_model_inference(combined)
+    latest_rows = enriched[enriched["dag_run_id"].astype(str) == latest_id].copy()
+    if latest_rows.empty:
+        return None, "No hay task instances del último dag run en los datos combinados."
 
-    pipe = joblib.load(model_path)
-    X = rows[FEATURE_COLUMNS]
-    proba = pipe.predict_proba(X)[:, 1]
+    try:
+        pipe = joblib.load(model_path)
+    except AttributeError as exc:
+        err_low = str(exc).lower()
+        if "degeneratefailureclassifier" in err_low.replace("_", "") or "__main__" in str(exc):
+            return (
+                None,
+                "El archivo del modelo es incompatible con esta versión (pickle antiguo). "
+                "Pulsá «Actualizar histórico y reentrenar modelo» para volver a generar el joblib.",
+            )
+        raise
+
+    X = sanitize_features_for_predict(latest_rows)
+    proba = np.asarray(pipe.predict_proba(X)[:, 1], dtype=float)
+    proba = np.nan_to_num(proba, nan=0.0, posinf=0.0, neginf=0.0)
 
     meta = load_metrics(metrics_path)
     p95_map = meta.get("task_duration_p95_sec", {})
 
-    out = rows[["task_id", "task_state", "duration_sec", "dag_run_id"]].copy()
-    out["p_fail"] = proba
+    latest_rows = latest_rows.copy()
+    latest_rows["p_fail"] = proba
+    latest_rows = latest_rows.sort_values(
+        ["task_order_idx", "p_fail"],
+        ascending=[True, False],
+    )
+
+    out = latest_rows[["task_id", "task_state", "duration_sec", "dag_run_id", "p_fail"]].copy()
+    out["task_state"] = (
+        out["task_state"].fillna("—").astype(str).replace({"nan": "—", "None": "—", "<NA>": "—"})
+    )
 
     def _dur_anomaly(row: pd.Series) -> bool:
         tid = str(row["task_id"])
-        if tid not in p95_map or pd.isna(row["duration_sec"]):
+        ds = row["duration_sec"]
+        if tid not in p95_map or pd.isna(ds):
             return False
-        return float(row["duration_sec"]) > float(p95_map[tid])
+        return float(ds) > float(p95_map[tid])
 
     out["duration_anomaly"] = out.apply(_dur_anomaly, axis=1)
-    out = out.sort_values("p_fail", ascending=False)
+    out["duration_sec"] = pd.to_numeric(out["duration_sec"], errors="coerce").fillna(-1.0)
+    out["p_fail"] = np.clip(np.asarray(out["p_fail"], dtype=float), 0.0, 1.0)
     return out, None
 
 
