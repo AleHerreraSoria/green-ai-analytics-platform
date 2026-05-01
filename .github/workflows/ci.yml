@@ -33,7 +33,7 @@ jobs:
 
       - name: Check de sintaxis Python (py_compile)
         run: |
-          python -m compileall -q airflow/dags spark/jobs spark/libs scripts ci
+          python -m compileall -q airflow/dags spark/jobs spark/libs scripts ci control-tower/ML control-tower/pages
 
       - name: Smoke checks de configuración
         run: |

@@ -1,0 +1,2 @@
+# Dependencias ML incluidas en control-tower/requirements.txt (scikit-learn, joblib).
+# Instalar desde control-tower: pip install -r requirements.txt

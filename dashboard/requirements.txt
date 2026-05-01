@@ -1,0 +1,12 @@
+# Dashboard Streamlit - Green AI Analytics Platform
+# Requisitos de dependencias
+
+streamlit>=1.29.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+boto3>=1.34.0
+plotly>=5.18.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+matplotlib>=3.10.9
+scipy>=1.17.1

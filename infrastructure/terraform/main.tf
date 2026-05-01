@@ -179,3 +179,35 @@ output "dashboard_secret_key" {
   value     = aws_iam_access_key.dashboard_keys.secret
   sensitive = true
 }
+
+# --- RECURSOS IMPORTADOS (MANUALES DE EDUARDO) ---
+
+# 1. El Bucket de Fuentes
+resource "aws_s3_bucket" "sources_layer" {
+  bucket = "sources-green-ai"
+  # Nota: Eduardo lo creó el 23 de abril. Al importar, Terraform leerá su configuración.
+}
+
+# 2. La Instancia Control Tower
+resource "aws_instance" "control_tower" {
+  ami           = "ami-0ec10929233384c7f" # Ubuntu 24.04 exacto de Eduardo
+  instance_type = "m7i-flex.large"         # Tipo exacto
+  key_name      = "green-ai-final-key"     # Key pair exacto
+  
+  subnet_id     = "subnet-078c14adf08a1998f" # Subred exacta
+  
+  # Obligatorio según tus datos (IMDSv2: Required)
+  metadata_options {
+    http_tokens = "required"
+  }
+
+  tags = {
+    Name = "control-tower-green-ai"
+  }
+}
+
+# 3. La IP Elástica de Eduardo (100.49.115.216)
+resource "aws_eip" "control_tower_eip" {
+  instance = aws_instance.control_tower.id
+  domain   = "vpc"
+}

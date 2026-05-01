@@ -1,0 +1,20 @@
+services:
+  control-tower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: control-tower
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    restart: unless-stopped
+    # Persistir export Parquet y modelo; si no montás volúmenes, hay que volver a
+    # ejecutar export + train tras cada recreación del contenedor.
+    volumes:
+      - ml_pipeline_data:/app/ML/data
+      - ml_pipeline_artifacts:/app/ML/artifacts
+
+volumes:
+  ml_pipeline_data:
+  ml_pipeline_artifacts:

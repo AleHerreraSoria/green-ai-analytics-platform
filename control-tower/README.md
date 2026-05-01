@@ -36,7 +36,31 @@ Para mantener la coherencia y profesionalismo de la interfaz, todos los miembros
   * `AIRFLOW_POLL_INTERVAL_SECONDS`
   * `STREAM_HEARTBEAT_SECONDS`
 * `control-tower` asume despliegue en una instancia separada y conecta con Airflow por API HTTPS.
+* Disparo manual del DAG desde la UI: `PIPELINE_ALLOW_MANUAL_TRIGGER=true` (habilita el botón en Pipeline Live; el usuario de la API debe poder crear `dagRuns`).
 * Si el stream no es estable, la página degrada automáticamente a modo polling sin romper la UI.
 
 ---
 *Este documento es dinámico. Si encuentras una mejor forma de optimizar la interfaz, propón el cambio en el canal de comunicación del equipo antes de implementarlo.*
+
+## 🐳 Ejecución con Docker
+
+### 1) Preparar variables de entorno
+
+```bash
+cp .env.example .env
+```
+
+Edita `.env` con tus valores reales (sobre todo variables de Airflow).
+
+### 2) Levantar el servicio
+
+```bash
+docker compose up --build
+```
+
+### 3) Acceso a la app
+
+- Local: `http://localhost:8501`
+- Desde otra máquina en la red: `http://<IP_DEL_HOST>:8501`
+
+> Asegúrate de abrir el puerto `8501` en firewall/security group si el host está en nube.

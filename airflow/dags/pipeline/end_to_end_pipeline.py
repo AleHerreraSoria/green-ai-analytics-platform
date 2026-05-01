@@ -72,7 +72,7 @@ def copy_sources_bucket_to_bronze():
 # ==========================================================
 
 with DAG(
-    dag_id='ingesta_full_pipeline_v3_gold',
+    dag_id='green-ai-full-pipeline',
     description='Pipeline E2E principal Bronze -> Silver -> Gold',
     schedule='@daily',
     start_date=pendulum.datetime(2026, 4, 21, tz="UTC"),

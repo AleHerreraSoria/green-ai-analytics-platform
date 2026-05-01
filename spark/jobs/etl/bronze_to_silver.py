@@ -13,6 +13,12 @@ Variables de entorno requeridas:
     S3_BRONZE_BUCKET, S3_SILVER_BUCKET
     En producción son inyectadas por el IAM Role / Airflow.
     En desarrollo local se pueden definir en un archivo .env.
+
+Estrategia de escritura:
+    Todas las llamadas a write_to_silver() utilizan operaciones MERGE nativas
+    de Delta Lake (ver libs/writer.py). La primera ejecución hace bootstrap;
+    las subsiguientes hacen Upsert idempotente sobre la llave natural del
+    dataset definida en MERGE_KEYS de writer.py.
 """
 
 from __future__ import annotations
@@ -223,7 +229,7 @@ def process_carbon_intensity_flat(spark: SparkSession, endpoint: str) -> tuple[D
     df = _log_dropped(df_renamed, df_clean, f"carbon_intensity/{endpoint}")
 
     dataset_key = f"electricity_maps/carbon_intensity/{endpoint}"
-    result: WriteResult = write_to_silver(df, dataset_key)
+    result: WriteResult = write_to_silver(df, dataset_key, spark=spark)
     return df, result.rows_written
 
 
@@ -279,10 +285,72 @@ def process_carbon_intensity_history(spark: SparkSession) -> tuple[DataFrame, in
     )
     df = _log_dropped(df_raw_exp, df_clean, "carbon_intensity/history")
 
+    # ── DEDUPLICACIÓN: ventanas temporales solapadas ──────────────────────────
+    #
+    # Raíz del problema:
+    #   El API de Electricity Maps entrega el endpoint /history con snapshots
+    #   horarios que se actualizan cuando las estimaciones preliminares son
+    #   corregidas con datos reales. Snapshots consecutivos comparten el mismo
+    #   (zone, datetime) pero difieren en updatedAt y carbon_intensity.
+    #   Cuando los archivos Bronze acumulan múltiples snapshots del mismo rango
+    #   horario, el DataFrame explodado contiene duplicados por la merge-key
+    #   (zone, datetime), lo que viola el requisito de unicidad de Delta MERGE.
+    #
+    # Estrategia: Window + row_number() en una sola pasada
+    #   1. Se define una ventana particionada por (zone, datetime) — la merge-key.
+    #   2. Dentro de cada ventana, los registros se ordenan por:
+    #        a) updated_at DESC NULLS LAST  → el valor real más reciente primero.
+    #        b) F.cast(emission_factor_type, "string") ASC  → tiebreaker
+    #           determinista en texto: garantiza el mismo resultado en cada
+    #           ejecución aunque updated_at sea idéntico entre dos filas.
+    #   3. Solo se retiene la fila con row_number() == 1 (el "ganador") por clave.
+    #
+    # Por qué Window + row_number() y no groupBy + max():
+    #   - groupBy + max(updated_at) requeriría un segundo join para recuperar
+    #     las columnas restantes (carbon_intensity, emission_factor_type, etc.),
+    #     lo que dobla el shuffle y consume el doble de memoria.
+    #   - Window + row_number() resuelve todo en UNA pasada de shuffle, escalando
+    #     linealmente con el volumen de datos.
+    #   - El particionado previo por (zone, datetime) alinea la ventana con la
+    #     distribución natural del dato, minimizando el movimiento entre nodos.
+    #
+    # Impacto en performance:
+    #   - Un único stage de shuffle adicional, acotado a las particiones (year, month)
+    #     ya presentes en el DataFrame.
+    #   - Sin colecciones a driver (no hay .collect()); todo se ejecuta en el plan
+    #     distribuido de Spark.
+    #   - El filtro row_number() == 1 elimina duplicados sin materializar el
+    #     DataFrame completo en memoria del driver.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    from pyspark.sql.window import Window
+
+    _dedup_window = (
+        Window
+        .partitionBy("zone", "datetime")        # merge-key: granularidad mínima
+        .orderBy(
+            F.col("updated_at").desc_nulls_last(),  # dato real > estimación
+            F.col("emission_factor_type").cast("string").asc_nulls_last(),  # tiebreaker determinista
+        )
+    )
+
+    df = (
+        df
+        .withColumn("_dedup_rank", F.row_number().over(_dedup_window))
+        .filter(F.col("_dedup_rank") == 1)
+        .drop("_dedup_rank")
+    )
+
+    logger.info(
+        "[QA:carbon_intensity/history] Deduplicación por (zone, datetime) aplicada "
+        "(criterio: max updated_at DESC NULLS LAST + emission_factor_type tiebreaker)."
+    )
+
     dataset_key = "electricity_maps/carbon_intensity/history"
-    result: WriteResult = write_to_silver(df, dataset_key)
+    result: WriteResult = write_to_silver(df, dataset_key, spark=spark)
     _require_materialized_write(result, dataset_key)
     return df, result.rows_written
+
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +402,7 @@ def process_electricity_mix(spark: SparkSession) -> tuple[DataFrame, int]:
     df = _log_dropped(df_raw_exp, df_clean, "electricity_mix/latest")
 
     dataset_key = "electricity_maps/electricity_mix/latest"
-    result: WriteResult = write_to_silver(df, dataset_key)
+    result: WriteResult = write_to_silver(df, dataset_key, spark=spark)
     _require_materialized_write(result, dataset_key)
     return df, result.rows_written
 
@@ -416,7 +484,7 @@ def process_observed_zones_dimension(spark: SparkSession) -> tuple[DataFrame, in
         )
     )
 
-    result = write_to_silver(df, "reference/zones_dimension")
+    result = write_to_silver(df, "reference/zones_dimension", spark=spark)
     return df, result.rows_written
 
 
@@ -464,7 +532,7 @@ def process_global_petrol_prices(spark: SparkSession) -> tuple[DataFrame, int]:
         F.round(F.col("residential_usd_per_kwh") * seasonal_factor, 4)
     )
 
-    result = write_to_silver(df, "global_petrol_prices")
+    result = write_to_silver(df, "global_petrol_prices", spark=spark)
     return df, result.rows_written
 
 
@@ -484,7 +552,7 @@ def process_mlco2_yearly_avg(spark: SparkSession) -> tuple[DataFrame, int]:
         .withColumnRenamed("Country", "country")
     )
 
-    result: WriteResult = write_to_silver(df, "mlco2/yearly_averages")
+    result: WriteResult = write_to_silver(df, "mlco2/yearly_averages", spark=spark)
     return df, result.rows_written
 
 
@@ -495,7 +563,7 @@ def process_mlco2_instances(spark: SparkSession) -> tuple[DataFrame, int]:
     df_raw = spark.read.option("header", "true").schema(MLCO2_INSTANCES_SCHEMA).csv(f"{BRONZE}/mlco2/instances.csv")
     df_clean = df_raw.filter(F.col("id").isNotNull())
     df = _log_dropped(df_raw, df_clean, "mlco2/instances")
-    result: WriteResult = write_to_silver(df, "mlco2/instances")
+    result: WriteResult = write_to_silver(df, "mlco2/instances", spark=spark)
     return df, result.rows_written
 
 def process_mlco2_impact(spark: SparkSession) -> tuple[DataFrame, int]:
@@ -507,7 +575,7 @@ def process_mlco2_impact(spark: SparkSession) -> tuple[DataFrame, int]:
                         .withColumnRenamed("PUE source", "pue_source"))
     df_clean = df_renamed.filter(F.col("region").isNotNull())
     df = _log_dropped(df_renamed, df_clean, "mlco2/impact")
-    result: WriteResult = write_to_silver(df, "mlco2/impact")
+    result: WriteResult = write_to_silver(df, "mlco2/impact", spark=spark)
     return df, result.rows_written
 
 def process_mlco2_gpus(spark: SparkSession) -> tuple[DataFrame, int]:
@@ -519,7 +587,7 @@ def process_mlco2_gpus(spark: SparkSession) -> tuple[DataFrame, int]:
                         .withColumnRenamed("GFLOPS16/W", "gflops_16_per_w"))
     df_clean = df_renamed.filter(F.col("gpu_model").isNotNull())
     df = _log_dropped(df_renamed, df_clean, "mlco2/gpus")
-    result: WriteResult = write_to_silver(df, "mlco2/gpus")
+    result: WriteResult = write_to_silver(df, "mlco2/gpus", spark=spark)
     return df, result.rows_written
 
 
@@ -560,7 +628,7 @@ def process_owid(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_raw, df_clean, "owid")
 
-    result: WriteResult = write_to_silver(df, "owid")
+    result: WriteResult = write_to_silver(df, "owid", spark=spark)
     return df, result.rows_written
 
 
@@ -579,7 +647,7 @@ def process_ec2_pricing(spark: SparkSession) -> tuple[DataFrame, int]:
         .withColumn("as_of_date", F.to_date("as_of_date", "yyyy-MM-dd"))
     )
 
-    result: WriteResult = write_to_silver(df, "reference/ec2_pricing")
+    result: WriteResult = write_to_silver(df, "reference/ec2_pricing", spark=spark)
     return df, result.rows_written
 
 
@@ -606,7 +674,7 @@ def process_geo_cloud_mapping(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_raw, df_clean, "reference/geo_cloud_mapping")
 
-    result: WriteResult = write_to_silver(df, "reference/geo_cloud_mapping")
+    result: WriteResult = write_to_silver(df, "reference/geo_cloud_mapping", spark=spark)
     return df, result.rows_written
 
 # ---------------------------------------------------------------------------
@@ -646,7 +714,7 @@ def process_usage_logs(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_raw, df_clean, "usage_logs")
 
-    result: WriteResult = write_to_silver(df, "usage_logs")
+    result: WriteResult = write_to_silver(df, "usage_logs", spark=spark)
     return df, result.rows_written
 
 
@@ -715,7 +783,7 @@ def process_world_bank(spark: SparkSession) -> tuple[DataFrame, int]:
             .csv(f"s3a://{BRONZE_BUCKET}/{temp_s3_key}")
         )
 
-        result = write_to_silver(df, "world_bank/ict_exports")
+        result = write_to_silver(df, "world_bank/ict_exports", spark=spark)
         return df, result.rows_written
 
     finally:
@@ -761,15 +829,30 @@ def process_world_bank_metadata(spark: SparkSession) -> tuple[DataFrame, int]:
     )
     df = _log_dropped(df_renamed, df_clean, "reference/world_bank_metadata")
 
-    result: WriteResult = write_to_silver(df, "reference/world_bank_metadata")
+    result: WriteResult = write_to_silver(df, "reference/world_bank_metadata", spark=spark)
     return df, result.rows_written
 
 # ===========================================================================
 # MAIN
 # ===========================================================================
 
-def main():
-    spark = build_spark()
+def main(spark: SparkSession | None = None) -> None:
+    """
+    Pipeline Bronze → Silver.
+
+    Parámetros
+    ----------
+    spark : SparkSession | None
+        Sesión Spark a reutilizar. Si es None, la función crea una sesión
+        propia y la cierra al terminar (modo standalone).
+        Si se inyecta externamente (ej.: desde un test de idempotencia o un
+        orquestador como Airflow), la sesión NO se destruye al finalizar —
+        el ciclo de vida queda en manos del llamador.
+    """
+    _owns_spark = spark is None
+    if _owns_spark:
+        spark = build_spark()
+
     results = {}
 
     try:
@@ -820,7 +903,9 @@ def main():
                 "Bronze->Silver finalizó con errores en datasets: " + ", ".join(error_steps)
             )
     finally:
-        spark.stop()
+        if _owns_spark:
+            spark.stop()
+            logger.info("SparkSession cerrada (standalone mode).")
 
 
 if __name__ == "__main__":

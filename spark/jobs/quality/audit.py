@@ -48,6 +48,7 @@ except ImportError:
 import boto3
 import pandas as pd
 from botocore.exceptions import ClientError
+from delta.tables import DeltaTable
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -576,10 +577,23 @@ AUDIT_LOG_SCHEMA = StructType([
 def persist_audit_log(spark: SparkSession, results: list[AuditResult]) -> None:
     """
     Persiste el log de auditoría en Delta (Silver) de forma idempotente.
-    La escritura usa replaceWhere para sobrescribir sólo la partición del día.
+
+    Estrategia:
+      - MERGE ON (dataset, run_date): garantiza exactamente una fila por
+        dataset por día de ejecución.
+      - Primera ejecución (bootstrap): escribe la tabla particionada por run_date.
+      - Ejecuciones subsiguientes: MERGE actualiza los campos si el registro
+        ya existe, o inserta uno nuevo si es un dataset nuevo o un nuevo día.
+      - Elimina completamente el workaround de schema mismatch y el toggle
+        de partitionOverwriteMode que era frágil ante concurrencia.
     """
-    run_date_str = results[0].run_timestamp.strftime("%Y-%m-%d") if results else \
-                   datetime.now(UTC).strftime("%Y-%m-%d")
+    log_path = f"{SILVER}/audit/audit_log"
+
+    run_date_str = (
+        results[0].run_timestamp.strftime("%Y-%m-%d")
+        if results
+        else datetime.now(UTC).strftime("%Y-%m-%d")
+    )
 
     rows = [
         {
@@ -596,39 +610,43 @@ def persist_audit_log(spark: SparkSession, results: list[AuditResult]) -> None:
     ]
 
     df_log = (
-        # Evita la ruta pandas->Spark que introduce NaN float en enteros nullable.
+        # Evita la ruta pandas→Spark que introduce NaN float en enteros nullable.
         spark.createDataFrame(rows, schema=AUDIT_LOG_SCHEMA)
         .withColumn("run_date", F.to_date("run_timestamp"))
     )
 
-    log_path = f"{SILVER}/audit/audit_log"
-
-    def _do_write(overwrite_schema: bool = False) -> None:
-        writer = (
+    if not DeltaTable.isDeltaTable(spark, log_path):
+        # ── Bootstrap: primera escritura de la tabla de auditoría ───────────
+        logger.info("[AUDIT] Bootstrap del log de auditoría en: %s", log_path)
+        (
             df_log.write
             .format("delta")
-            .mode("overwrite")
             .partitionBy("run_date")
+            .save(log_path)
         )
-        if overwrite_schema:
-            # Disable dynamic partition overwrite temporarily via SparkContext conf
-            spark.conf.set("spark.sql.sources.partitionOverwriteMode", "static")
-            writer = writer.option("overwriteSchema", "true")
-        else:
-            writer = writer.option("replaceWhere", f"run_date = '{run_date_str}'")
-        writer.save(log_path)
-        if overwrite_schema:
-            spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+    else:
+        # ── MERGE: idempotente ON (dataset, run_date) ───────────────────────
+        # Garantiza: una fila por (dataset, run_date).
+        # Re-ejecuciones el mismo día actualizan los campos en lugar de duplicar.
+        logger.info(
+            "[AUDIT] MERGE del log de auditoría (run_date=%s)", run_date_str
+        )
+        (
+            DeltaTable.forPath(spark, log_path)
+            .alias("target")
+            .merge(
+                df_log.alias("source"),
+                "target.`dataset` = source.`dataset` "
+                "AND target.`run_date` = source.`run_date`",
+            )
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
 
-    try:
-        _do_write(overwrite_schema=False)
-    except Exception as e:
-        if "schema mismatch" in str(e).lower() or "_LEGACY_ERROR_TEMP_DELTA_0007" in str(e):
-            logger.warning("Schema mismatch detectado — migrando schema de audit_log...")
-            _do_write(overwrite_schema=True)
-        else:
-            raise
-    logger.info("Log de auditoría persistido en: %s (run_date=%s)", log_path, run_date_str)
+    logger.info(
+        "Log de auditoría persistido en: %s (run_date=%s)", log_path, run_date_str
+    )
 
 
 # ===========================================================================

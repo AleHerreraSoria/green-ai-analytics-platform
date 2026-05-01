@@ -5,12 +5,14 @@ Capa Gold — Modelo Dimensional Kimball (Esquema Estrella)
 Plataforma: Green AI Analytics Platform
 
 Parte 1: Configuración de Spark e idempotencia + funciones de dimensiones.
-Parte 2: Funciones de hechos (a completar en la siguiente iteración).
+Parte 2: Funciones de hechos.
 
 Convenciones:
   - Surrogate Keys: md5() sobre la clave natural en lowercase / trimmed.
-  - Escritura de dimensiones: mode("overwrite") total (sin partición).
-  - Escritura de hechos: mode("overwrite") con partitionBy() + dynamic overwrite.
+  - Escritura Gold: MERGE nativo de Delta Lake (idempotente).
+      · Primera ejecución (bootstrap): .write.format("delta").save()
+      · Ejecuciones subsiguientes: DeltaTable.merge() ON <surrogate/natural key>
+        → whenMatchedUpdateAll() / whenNotMatchedInsertAll()
   - Tipos estrictos en todos los casts de salida.
   - Bloques try/except por función para aislamiento de fallos.
 
@@ -25,6 +27,7 @@ import logging
 import os
 import sys
 
+from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, IntegerType, StringType
@@ -70,50 +73,171 @@ GOLD: str   = f"s3a://{GOLD_BUCKET}"
 # =============================================================================
 # Inicialización de SparkSession
 # CRÍTICO: partitionOverwriteMode=dynamic garantiza idempotencia estricta.
-# Las reescrituras parciales no borran particiones ajenas al lote actual.
+# La sesión se construye dentro de build_spark() y NO en el cuerpo del módulo,
+# para permitir inyección externa desde tests u orquestadores (Airflow, etc.).
 # =============================================================================
 
-spark: SparkSession = (
-    SparkSession.builder
-    .appName("green-ai-silver-to-gold")
-    # ── Idempotencia estricta (CRÍTICO) ───────────────────────────────────────
-    .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
-    # ── Zona horaria canónica ─────────────────────────────────────────────────
-    .config("spark.sql.session.timeZone", "UTC")
-    # ── Delta Lake ────────────────────────────────────────────────────────────
-    .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-    .config(
-        "spark.sql.catalog.spark_catalog",
-        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+def build_spark() -> SparkSession:
+    """
+    Construye y retorna la SparkSession del pipeline Silver → Gold.
+    Usa getOrCreate() para reutilizar la sesión activa si existe.
+    """
+    spark = (
+        SparkSession.builder
+        .appName("green-ai-silver-to-gold")
+        # ── Idempotencia estricta (CRÍTICO) ───────────────────────────────────────
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        # ── Zona horaria canónica ─────────────────────────────────────────────────
+        .config("spark.sql.session.timeZone", "UTC")
+        # ── Delta Lake ────────────────────────────────────────────────────────────
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog",
+            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+        )
+        # ── JARs: Delta + Hadoop-AWS + SDK ────────────────────────────────────────
+        .config(
+            "spark.jars.packages",
+            "io.delta:delta-spark_2.12:3.2.0,"
+            "org.apache.hadoop:hadoop-aws:3.3.4,"
+            "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+            "software.amazon.awssdk:bundle:2.20.18",
+        )
+        .config(
+            "spark.hadoop.fs.s3a.aws.credentials.provider",
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        )
+        # ── Fix Hadoop 3.3.4 «60s» NumberFormatException ─────────────────────────
+        .config("spark.hadoop.fs.s3a.connection.timeout",           "60000")
+        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
+        .config("spark.hadoop.fs.s3a.threads.keepalivetime",        "60")
+        .config("spark.hadoop.fs.s3a.multipart.purge",              "false")
+        .config("spark.hadoop.fs.s3a.multipart.purge.age",          "86400")
+        # ── Optimizaciones de escritura S3 ────────────────────────────────────────
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        .config("spark.hadoop.fs.s3a.fast.upload", "true")
+        # ── Memoria del driver ────────────────────────────────────────────────────
+        .config("spark.driver.memory", "8g")
+        .getOrCreate()
     )
-    # ── JARs: Delta + Hadoop-AWS + SDK ────────────────────────────────────────
-    .config(
-        "spark.jars.packages",
-        "io.delta:delta-spark_2.12:3.2.0,"
-        "org.apache.hadoop:hadoop-aws:3.3.4,"
-        "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
-        "software.amazon.awssdk:bundle:2.20.18",
-    )
-    .config(
-        "spark.hadoop.fs.s3a.aws.credentials.provider",
-        "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
-    )
-    # ── Fix Hadoop 3.3.4 «60s» NumberFormatException ─────────────────────────
-    .config("spark.hadoop.fs.s3a.connection.timeout",           "60000")
-    .config("spark.hadoop.fs.s3a.connection.establish.timeout", "60000")
-    .config("spark.hadoop.fs.s3a.threads.keepalivetime",        "60")
-    .config("spark.hadoop.fs.s3a.multipart.purge",              "false")
-    .config("spark.hadoop.fs.s3a.multipart.purge.age",          "86400")
-    # ── Optimizaciones de escritura S3 ────────────────────────────────────────
-    .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
-    .config("spark.hadoop.fs.s3a.fast.upload", "true")
-    # ── Memoria del driver ────────────────────────────────────────────────────
-    .config("spark.driver.memory", "8g")
-    .getOrCreate()
-)
+    spark.sparkContext.setLogLevel("WARN")
+    logger.info("SparkSession lista. partitionOverwriteMode=dynamic ✓")
+    return spark
 
-spark.sparkContext.setLogLevel("WARN")
-logger.info("SparkSession iniciada. partitionOverwriteMode=dynamic ✓")
+# =============================================================================
+# HELPER CENTRAL DE ESCRITURA GOLD — MERGE idempotente
+# =============================================================================
+
+def _merge_gold(
+    df: DataFrame,
+    path: str,
+    merge_keys: list[str],
+    partition_by: list[str] | None = None,
+    spark: SparkSession | None = None,
+) -> None:
+    """
+    Escritura idempotente sobre una tabla Gold Delta usando MERGE nativo
+    con optimización de Partition Pruning.
+
+    Flujo:
+      1. Si la tabla Delta NO existe (primera ejecución / bootstrap):
+         escribe directamente con .write.format("delta"), aplicando el
+         particionado indicado. Equivalente al overwrite anterior.
+
+      2. Si la tabla YA EXISTE:
+         ejecuta MERGE con condición en dos niveles:
+
+         Nivel 1 — Partition Pruning (sólo para tablas particionadas):
+           Se recolectan los valores distintos de cada columna de partición
+           presentes en el lote source y se inyectan como predicados IN
+           sobre el target. Delta descarta particiones que no coincidan
+           ANTES de abrir ningún archivo, evitando full table scans.
+
+         Nivel 2 — Row-level join:
+           Las merge_keys identifican la fila exacta dentro de las
+           particiones ya podadas (equi-join exacto).
+
+         WHEN MATCHED     → UPDATE SET *
+         WHEN NOT MATCHED → INSERT *
+
+    Parámetros
+    ----------
+    df          : DataFrame con los datos transformados listos para Gold.
+    path        : Ruta S3 de la tabla Delta de destino.
+    merge_keys  : Columnas que forman el equi-join de la condición ON.
+    partition_by: Columnas de partición (bootstrap) y de pruning (MERGE).
+                  Si es None o vacía, no se aplica pruning (dimensiones sin
+                  partición funcionan correctamente sin cambio de firma).
+    """
+    if spark is None:
+        from pyspark.sql import SparkSession as _SparkSession
+        spark = _SparkSession.getActiveSession() or _SparkSession.builder.getOrCreate()
+
+    if not DeltaTable.isDeltaTable(spark, path):
+        # ── Bootstrap: primera escritura de la tabla ─────────────────────────
+        logger.info("[MERGE-GOLD] Bootstrap (tabla nueva): %s", path)
+        writer = df.write.format("delta")
+        if partition_by:
+            writer = writer.partitionBy(*partition_by)
+        writer.save(path)
+        return
+
+    # ── MERGE: escritura idempotente sobre tabla existente ───────────────────
+    logger.info(
+        "[MERGE-GOLD] Ejecutando MERGE sobre '%s' con keys=%s partition_by=%s",
+        path, merge_keys, partition_by or [],
+    )
+
+    # ── Construcción de la condición MERGE en dos niveles ─────────────────
+    # Nivel 1 — Partition Pruning: predicados IN sobre columnas de partición
+    # derivados de los valores distintos presentes en el lote SOURCE.
+    # Delta descarta particiones no relevantes antes de abrir ningún archivo.
+    # Nivel 2 — Row-level join: equi-join exacto sobre merge_keys.
+    # ────────────────────────────────────────────────────────────────────────
+
+    # ── Deduplicar source por merge_keys (requisito de Delta MERGE) ──────────
+    # Delta exige source sin duplicados por clave de merge.
+    df = df.dropDuplicates(merge_keys)
+
+    pruning_clauses: list[str] = []
+    effective_partition_cols = [
+        p for p in (partition_by or []) if p not in merge_keys
+    ]
+    if effective_partition_cols:
+        source_cols = set(df.columns)
+        for part_col in effective_partition_cols:
+            if part_col not in source_cols:
+                logger.warning(
+                    "[MERGE-GOLD] Columna de partición '%s' no encontrada en "
+                    "el source DataFrame; pruning omitido para esta columna.",
+                    part_col,
+                )
+                continue
+            distinct_vals = [
+                row[part_col]
+                for row in df.select(part_col).distinct().collect()
+                if row[part_col] is not None
+            ]
+            if not distinct_vals:
+                continue
+            if isinstance(distinct_vals[0], str):
+                in_list = ", ".join(f"'{v}'" for v in distinct_vals)
+            else:
+                in_list = ", ".join(str(v) for v in distinct_vals)
+            pruning_clauses.append(f"target.`{part_col}` IN ({in_list})")
+
+    key_clauses = [f"target.`{k}` = source.`{k}`" for k in merge_keys]
+    merge_condition = " AND ".join(pruning_clauses + key_clauses)
+
+    (
+        DeltaTable.forPath(spark, path)
+        .alias("target")
+        .merge(df.alias("source"), merge_condition)
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+
 
 # =============================================================================
 # PARTE 1 — FUNCIONES DE DIMENSIONES (Kimball)
@@ -122,12 +246,12 @@ logger.info("SparkSession iniciada. partitionOverwriteMode=dynamic ✓")
 #   1. Lee la(s) tabla(s) Silver necesarias.
 #   2. Genera la Surrogate Key con md5() sobre la clave natural.
 #   3. Selecciona y castea las columnas finales con tipos estrictos.
-#   4. Escribe en Gold con mode("overwrite") TOTAL (sin partición, tablas chicas).
+#   4. Escribe en Gold con MERGE idempotente ON surrogate key.
 #   5. Retorna el DataFrame Gold para uso posterior en los JOINs de hechos.
 # =============================================================================
 
 
-def build_dim_country() -> DataFrame:
+def build_dim_country(spark: SparkSession) -> DataFrame:
     """
     Dimensión de país.
 
@@ -177,13 +301,8 @@ def build_dim_country() -> DataFrame:
             F.col("income_group").cast(StringType()),
         )
 
-        # ── 4. Escribir en Gold (overwrite total; tabla pequeña) ──────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_country")
-        )
+        # ── 4. Escribir en Gold con MERGE idempotente ON country_id ──────────
+        _merge_gold(dim, f"{GOLD}/dim_country", merge_keys=["country_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_country] OK — %d filas escritas en Gold.", row_count)
@@ -194,7 +313,7 @@ def build_dim_country() -> DataFrame:
         raise
 
 
-def build_dim_region() -> DataFrame:
+def build_dim_region(spark: SparkSession) -> DataFrame:
     """
     Dimensión puente de región cloud.
 
@@ -253,13 +372,8 @@ def build_dim_region() -> DataFrame:
             F.col("mapping_notes").cast(StringType()),
         )
 
-        # ── 4. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_region")
-        )
+        # ── 4. Escribir en Gold con MERGE idempotente ON region_id ───────────
+        _merge_gold(dim, f"{GOLD}/dim_region", merge_keys=["region_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_region] OK — %d filas escritas en Gold.", row_count)
@@ -270,7 +384,7 @@ def build_dim_region() -> DataFrame:
         raise
 
 
-def build_dim_gpu_model() -> DataFrame:
+def build_dim_gpu_model(spark: SparkSession) -> DataFrame:
     """
     Dimensión catálogo de GPUs (MLCO2).
 
@@ -328,13 +442,8 @@ def build_dim_gpu_model() -> DataFrame:
             F.col("memory").cast(StringType()).alias("memory_spec"),
         )
 
-        # ── 5. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_gpu_model")
-        )
+        # ── 5. Escribir en Gold con MERGE idempotente ON gpu_id ──────────────
+        _merge_gold(dim, f"{GOLD}/dim_gpu_model", merge_keys=["gpu_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_gpu_model] OK — %d filas escritas en Gold.", row_count)
@@ -345,7 +454,7 @@ def build_dim_gpu_model() -> DataFrame:
         raise
 
 
-def build_dim_instance_type() -> DataFrame:
+def build_dim_instance_type(spark: SparkSession) -> DataFrame:
     """
     Dimensión de tipos de instancia EC2 (proxy TCO de cómputo).
 
@@ -395,13 +504,8 @@ def build_dim_instance_type() -> DataFrame:
             F.col("pricing_notes").cast(StringType()).alias("notes"),
         )
 
-        # ── 4. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_instance_type")
-        )
+        # ── 4. Escribir en Gold con MERGE idempotente ON instance_type_id ────
+        _merge_gold(dim, f"{GOLD}/dim_instance_type", merge_keys=["instance_type_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_instance_type] OK — %d filas escritas en Gold.", row_count)
@@ -412,7 +516,7 @@ def build_dim_instance_type() -> DataFrame:
         raise
 
 
-def build_dim_electricity_price() -> DataFrame:
+def build_dim_electricity_price(spark: SparkSession) -> DataFrame:
     """
     Dimensión de precio eléctrico residencial estático por país.
 
@@ -458,13 +562,8 @@ def build_dim_electricity_price() -> DataFrame:
             F.lit(None).cast(StringType()).alias("price_reference_date"),
         )
 
-        # ── 3. Escribir en Gold ───────────────────────────────────────────────
-        (
-            dim.write
-            .format("delta")
-            .mode("overwrite")
-            .save(f"{GOLD}/dim_electricity_price")
-        )
+        # ── 3. Escribir en Gold con MERGE idempotente ON price_id ────────────
+        _merge_gold(dim, f"{GOLD}/dim_electricity_price", merge_keys=["price_id"], spark=spark)
 
         row_count: int = dim.count()
         logger.info("[dim_electricity_price] OK — %d filas escritas en Gold.", row_count)
@@ -490,7 +589,7 @@ def build_dim_electricity_price() -> DataFrame:
 # =============================================================================
 
 
-def build_fact_ai_compute_usage() -> DataFrame:
+def build_fact_ai_compute_usage(spark: SparkSession) -> DataFrame:
     """
     Tabla de hechos principal de sesiones de cómputo de IA.
 
@@ -680,13 +779,15 @@ def build_fact_ai_compute_usage() -> DataFrame:
             F.col("cost_compute_usd").cast(DoubleType()),
         )
 
-        # ── 8. Escribir en Gold con partición temporal ────────────────────────
-        (
-            fact.write
-            .format("delta")
-            .mode("overwrite")
-            .partitionBy("year", "month")
-            .save(f"{GOLD}/fact_ai_compute_usage")
+        # ── 8. Escribir en Gold con MERGE idempotente ON session_id ──────────
+        # Llave de unicidad: session_id (UUID único por sesión completa).
+        # Partición física: year, month (sólo aplicada en bootstrap).
+        _merge_gold(
+            fact,
+            f"{GOLD}/fact_ai_compute_usage",
+            merge_keys=["session_id"],
+            partition_by=["year", "month"],
+            spark=spark,
         )
 
         row_count: int = fact.count()
@@ -698,7 +799,7 @@ def build_fact_ai_compute_usage() -> DataFrame:
         raise
 
 
-def build_fact_carbon_intensity_hourly() -> DataFrame:
+def build_fact_carbon_intensity_hourly(spark: SparkSession) -> DataFrame:
     """
     Tabla de hechos de intensidad de carbono horaria y mix eléctrico.
 
@@ -787,13 +888,15 @@ def build_fact_carbon_intensity_hourly() -> DataFrame:
             F.col("carbon_intensity").cast(DoubleType()).alias("carbon_intensity_gco2eq_per_kwh"),
         )
 
-        # ── 5. Escribir en Gold ───────────────────────────────────────────────
-        (
-            fact.write
-            .format("delta")
-            .mode("overwrite")
-            .partitionBy("year", "month")
-            .save(f"{GOLD}/fact_carbon_intensity_hourly")
+        # ── 5. Escribir en Gold con MERGE idempotente ON (zone, event_ts) ────
+        # Llave compuesta: zona geográfica + timestamp del evento horario.
+        # Partición física: year, month (sólo aplicada en bootstrap).
+        _merge_gold(
+            fact,
+            f"{GOLD}/fact_carbon_intensity_hourly",
+            merge_keys=["zone", "event_ts"],
+            partition_by=["year", "month"],
+            spark=spark,
         )
 
         row_count: int = fact.count()
@@ -807,7 +910,7 @@ def build_fact_carbon_intensity_hourly() -> DataFrame:
         raise
 
 
-def build_fact_country_energy_annual() -> DataFrame:
+def build_fact_country_energy_annual(spark: SparkSession) -> DataFrame:
     """
     Tabla de hechos de indicadores macroenergéticos y económicos anuales por país.
 
@@ -903,13 +1006,15 @@ def build_fact_country_energy_annual() -> DataFrame:
             (F.col("year") >= 1990) & (F.col("year") <= 2030)
         )
 
-        # ── 7. Escribir en Gold particionado por año ──────────────────────────
-        (
-            fact.write
-            .format("delta")
-            .mode("overwrite")
-            .partitionBy("year")
-            .save(f"{GOLD}/fact_country_energy_annual")
+        # ── 7. Escribir en Gold con MERGE idempotente ON (iso_alpha3, year) ──
+        # Llave compuesta: código de país ISO 3 + año del indicador.
+        # Partición física: year (sólo aplicada en bootstrap).
+        _merge_gold(
+            fact,
+            f"{GOLD}/fact_country_energy_annual",
+            merge_keys=["iso_alpha3", "year"],
+            partition_by=["year"],
+            spark=spark,
         )
 
         row_count: int = fact.count()
@@ -927,9 +1032,18 @@ def build_fact_country_energy_annual() -> DataFrame:
 # ORQUESTACIÓN PRINCIPAL
 # =============================================================================
 
-def main() -> None:
+def main(spark: SparkSession | None = None) -> None:
     """
     Pipeline Gold completo: Dimensiones → Hechos.
+
+    Parámetros
+    ----------
+    spark : SparkSession | None
+        Sesión Spark a reutilizar. Si es None, la función crea una sesión
+        propia y la cierra al terminar (modo standalone).
+        Si se inyecta externamente (ej.: desde un test de idempotencia o un
+        orquestador como Airflow), la sesión NO se destruye al finalizar —
+        el ciclo de vida queda en manos del llamador.
 
     Orden de ejecución:
       1. Dimensiones (sin dependencias entre sí → pueden paralelizarse en Airflow).
@@ -940,71 +1054,79 @@ def main() -> None:
       - Si un hecho falla de forma aislada, los demás hechos continúan.
       - Al final se reporta el estado global y se sale con código 1 si hay errores.
     """
+    _owns_spark = spark is None
+    if _owns_spark:
+        spark = build_spark()
+
     logger.info("=" * 70)
     logger.info("  Green AI — Silver → Gold  |  Pipeline Dimensional Kimball")
     logger.info("=" * 70)
 
-    # ── Paso 1: Dimensiones ───────────────────────────────────────────────────
-    logger.info("--- PASO 1/2: Construcción de Dimensiones ---")
-    dim_pipeline = [
-        build_dim_country,
-        build_dim_region,
-        build_dim_gpu_model,
-        build_dim_instance_type,
-        build_dim_electricity_price,
-    ]
+    try:
+        # ── Paso 1: Dimensiones ───────────────────────────────────────────────────
+        logger.info("--- PASO 1/2: Construcción de Dimensiones ---")
+        dim_pipeline = [
+            build_dim_country,
+            build_dim_region,
+            build_dim_gpu_model,
+            build_dim_instance_type,
+            build_dim_electricity_price,
+        ]
 
-    dim_errors: list[str] = []
-    for fn in dim_pipeline:
-        try:
-            fn()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Dimensión fallida [%s]: %s", fn.__name__, exc)
-            dim_errors.append(fn.__name__)
+        dim_errors: list[str] = []
+        for fn in dim_pipeline:
+            try:
+                fn(spark)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Dimensión fallida [%s]: %s", fn.__name__, exc)
+                dim_errors.append(fn.__name__)
 
-    if dim_errors:
-        logger.error(
-            "❌ %d dimensión(es) fallaron: %s. Abortando pipeline de hechos.",
-            len(dim_errors),
-            ", ".join(dim_errors),
-        )
-        spark.stop()
-        sys.exit(1)
+        if dim_errors:
+            logger.error(
+                "❌ %d dimensión(es) fallaron: %s. Abortando pipeline de hechos.",
+                len(dim_errors),
+                ", ".join(dim_errors),
+            )
+            if _owns_spark:
+                spark.stop()
+            sys.exit(1)
 
-    logger.info("✅ Todas las dimensiones construidas correctamente.")
+        logger.info("✅ Todas las dimensiones construidas correctamente.")
 
-    # ── Paso 2: Hechos ────────────────────────────────────────────────────────
-    logger.info("--- PASO 2/2: Construcción de Tablas de Hechos ---")
-    fact_pipeline = [
-        build_fact_ai_compute_usage,
-        build_fact_carbon_intensity_hourly,
-        build_fact_country_energy_annual,
-    ]
+        # ── Paso 2: Hechos ────────────────────────────────────────────────────────
+        logger.info("--- PASO 2/2: Construcción de Tablas de Hechos ---")
+        fact_pipeline = [
+            build_fact_ai_compute_usage,
+            build_fact_carbon_intensity_hourly,
+            build_fact_country_energy_annual,
+        ]
 
-    fact_errors: list[str] = []
-    for fn in fact_pipeline:
-        try:
-            fn()
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Hecho fallido [%s]: %s", fn.__name__, exc)
-            fact_errors.append(fn.__name__)
+        fact_errors: list[str] = []
+        for fn in fact_pipeline:
+            try:
+                fn(spark)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Hecho fallido [%s]: %s", fn.__name__, exc)
+                fact_errors.append(fn.__name__)
 
-    # ── Resumen final ─────────────────────────────────────────────────────────
-    logger.info("=" * 70)
-    if not fact_errors:
-        logger.info("✅ Pipeline Gold completado exitosamente. Todas las tablas escritas.")
-    else:
-        logger.error(
-            "❌ %d tabla(s) de hechos fallaron: %s",
-            len(fact_errors),
-            ", ".join(fact_errors),
-        )
+        # ── Resumen final ─────────────────────────────────────────────────────────
+        logger.info("=" * 70)
+        if not fact_errors:
+            logger.info("✅ Pipeline Gold completado exitosamente. Todas las tablas escritas.")
+        else:
+            logger.error(
+                "❌ %d tabla(s) de hechos fallaron: %s",
+                len(fact_errors),
+                ", ".join(fact_errors),
+            )
 
-    spark.stop()
-    logger.info("SparkSession cerrada.")
+        if fact_errors:
+            sys.exit(1)
 
-    if fact_errors:
-        sys.exit(1)
+    finally:
+        if _owns_spark:
+            spark.stop()
+            logger.info("SparkSession cerrada (standalone mode).")
 
 
 # =============================================================================
