@@ -77,8 +77,8 @@ Una vez que la instancia de Airflow esté operativa (ver `airflow_public_ip` en 
 1. Acceda a `http://<airflow_public_ip>:8080` (User/Pass por defecto o definidos en config).
 2. **Conexiones:** Configure en la UI de Airflow:
    * `aws_default`: Tipo Amazon Web Services.
-   * `spark_ssh_conn`: Tipo SSH (apuntando a la IP de la instancia Spark).
-3. **Activación:** Localice el DAG `ingesta_full_pipeline_v3_gold` y actívelo (Toggle ON).
+   * `spark_ssh`: Tipo SSH (apuntando a la IP de la instancia Spark; debe coincidir con `SPARK_SSH_CONN_ID` en `.env`).
+3. **Activación:** Localice el DAG `green-ai-full-pipeline` y actívelo (Toggle ON).
 4. **Ejecución:** Dispare el trigger manual para iniciar el proceso E2E.
 
 ---
